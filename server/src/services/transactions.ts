@@ -264,8 +264,13 @@ const TxPatch = z.object({
 });
 
 export async function updateTransaction(db: Db, user: AuthUser, id: number, body: unknown, source: Source = "web", ip?: string) {
+  return db.tx((q) => updateTransactionWith(q, user, id, body, source, ip));
+}
+
+/** Edição dentro de uma transação de banco já aberta (usada pela confirmação do bot). */
+export async function updateTransactionWith(q: Queryable, user: AuthUser, id: number, body: unknown, source: Source = "web", ip?: string) {
   const patch = parse(TxPatch, body);
-  return db.tx(async (q) => {
+  {
     const current = await loadOwned(q, user, id);
     const kind = patch.kind ?? current.kind;
     if (patch.accountId) await getOwnAccount(q, user, patch.accountId);
@@ -299,7 +304,7 @@ export async function updateTransaction(db: Db, user: AuthUser, id: number, body
     if (sets.length) await q.query(`UPDATE transactions SET ${sets.join(", ")}, updated_at = now() WHERE id = $1`, vals);
     await audit(q, { userId: user.id, action: "transaction.update", entity: "transaction", entityId: id, source, ip, details: patch });
     return (await getTransactions(q, [id]))[0];
-  });
+  }
 }
 
 export async function markPaid(db: Db, user: AuthUser, id: number, paidAt?: string, source: Source = "web") {
@@ -308,7 +313,11 @@ export async function markPaid(db: Db, user: AuthUser, id: number, paidAt?: stri
 
 /** Exclusão lógica (preserva histórico/auditoria). `scope=group` remove parcelas pendentes do mesmo grupo. */
 export async function deleteTransaction(db: Db, user: AuthUser, id: number, scope: "one" | "group" = "one", source: Source = "web", ip?: string) {
-  return db.tx(async (q) => {
+  return db.tx((q) => deleteTransactionWith(q, user, id, scope, source, ip));
+}
+
+export async function deleteTransactionWith(q: Queryable, user: AuthUser, id: number, scope: "one" | "group" = "one", source: Source = "web", ip?: string) {
+  {
     const t = await loadOwned(q, user, id);
     let count = 1;
     if (scope === "group" && t.installment_group) {
@@ -323,7 +332,7 @@ export async function deleteTransaction(db: Db, user: AuthUser, id: number, scop
     }
     await audit(q, { userId: user.id, action: "transaction.delete", entity: "transaction", entityId: id, source, ip, details: { scope, count } });
     return { deleted: count };
-  });
+  }
 }
 
 // ------------------------ Listagem / filtros ------------------------

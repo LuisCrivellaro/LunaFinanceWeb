@@ -15,19 +15,24 @@ import type { AuthUser } from "../services/access.js";
 import { listAccounts } from "../services/accounts.js";
 import { listCategories } from "../services/categories.js";
 import { contributeWith, createGoalWith, listGoals } from "../services/goals.js";
-import { createTransactionWith, getTransactions, markPaid, PAYMENT_LABELS, PAYMENT_METHODS, type PaymentMethod } from "../services/transactions.js";
+import {
+  createTransactionWith, deleteTransactionWith, getTransactions, markPaid, PAYMENT_LABELS, PAYMENT_METHODS, updateTransactionWith, type PaymentMethod,
+} from "../services/transactions.js";
+import { createTransferWith } from "../services/transfers.js";
 import type { InlineButton } from "./api.js";
 import { TelegramError } from "./api.js";
 import { findPossibleDuplicate } from "./data.js";
 import { brl, dtFull, esc } from "./format.js";
 import { consumeLinkCode, unlinkTelegram, userByTelegramId } from "./linking.js";
-import { interpret, monthPeriod, parseAmountReply, type Intent, type NluContext, type Query } from "./nlu.js";
+import { followUp, interpret, monthPeriod, parseAmountReply, type Intent, type NluContext, type Query } from "./nlu.js";
+import { aiLimiter, messageLimiter } from "./throttle.js";
 import type { Draft } from "./parser.js";
 import { parseDateText } from "./parser.js";
 import { buildReply, dateLabel, REPORT_MENU, reportQuery } from "./replies.js";
 import {
-  cancelAllPending, cancelPending, clearConversation, confirmPending, createPending, getConversation, getPending, pendingProblem,
-  setConversation, setPendingMessage, updatePending, type ConvState, type Pending, type PendingPayload,
+  cancelAllPending, cancelPending, clearConversation, confirmPending, createPending, getConversation, getLastQuery, getPending, pendingProblem,
+  saveLastQuery, setConversation, setPendingMessage, updatePending, type ConvState, type Pending, type PendingPayload,
+  type TransferPayload, type TxDeletePayload, type TxUpdatePayload,
 } from "./state.js";
 
 // ----- Tipos mínimos da Bot API -----
@@ -139,6 +144,11 @@ async function onMessage(ctx: AppContext, msg: TgMessage, op: string) {
     return;
   }
   ctx.log.info("telegram.mensagem", { op, user_id: user.id, cmd: cmd ?? "texto" });
+  if (!messageLimiter.take(`u${user.id}`)) {
+    ctx.log.warn("telegram.limite_mensagens", { op, user_id: user.id });
+    await tg.sendMessage(user.chatId, "Muitas mensagens em pouco tempo. Aguarde um minuto e tente de novo.");
+    return;
+  }
 
   if (cmd) {
     // qualquer comando encerra uma pergunta em andamento
@@ -154,6 +164,7 @@ async function runCommand(ctx: AppContext, user: User, cmd: string) {
   const tg = ctx.telegram!;
   switch (cmd) {
     case "start":
+      return sendWelcome(ctx, user);
     case "ajuda":
     case "help":
       return sendHelp(ctx, user);
@@ -218,6 +229,40 @@ async function doLink(ctx: AppContext, msg: TgMessage, code: string) {
   );
 }
 
+const QUICK_MENU: InlineButton[][] = [
+  [{ text: "📋 Resumo do mês", callback_data: "q:summary" }, { text: "💼 Saldo", callback_data: "q:balance" }],
+  [{ text: "🧮 Quanto posso gastar", callback_data: "q:spendable" }, { text: "🎯 Metas", callback_data: "q:goals" }],
+  [{ text: "💸 Últimas despesas", callback_data: "q:last_expense" }, { text: "❓ Ajuda", callback_data: "q:help" }],
+];
+
+function quickQuery(key: string): Query | null {
+  switch (key) {
+    case "summary":
+      return { q: "summary", period: monthPeriod(today().slice(0, 7)) };
+    case "balance":
+      return { q: "balance" };
+    case "spendable":
+      return { q: "spendable" };
+    case "goals":
+      return { q: "goals" };
+    case "last_expense":
+      return { q: "last", kind: "expense", limit: 10 };
+    default:
+      return null;
+  }
+}
+
+async function sendWelcome(ctx: AppContext, user: User) {
+  await ctx.telegram!.sendMessage(
+    user.chatId,
+    `Oi, ${esc(user.name.split(" ")[0])}! 🌙 Sou o assistente do <b>Luna Finance</b>.\n\n` +
+      "Pode falar comigo normalmente, sem comandos:\n" +
+      "• <i>Gastei 45 reais no almoço</i>\n• <i>Quanto gastei essa semana?</i>\n• <i>Quanto posso gastar até o fim do mês?</i>\n\n" +
+      "Eu sempre mostro um resumo e só registro depois que você confirmar.",
+    { reply_markup: { inline_keyboard: QUICK_MENU } },
+  );
+}
+
 async function sendHelp(ctx: AppContext, user: User) {
   await ctx.telegram!.sendMessage(
     user.chatId,
@@ -227,6 +272,8 @@ async function sendHelp(ctx: AppContext, user: User) {
       "• <i>Conta de internet de 120 para dia 20</i>\n• <i>Comprei um celular de 2.400 em 12x</i>\n\n" +
       "<b>Perguntar</b>\n• <i>Quanto gastei este mês?</i>\n• <i>Quanto gastei com alimentação?</i>\n• <i>Compare meus gastos com o mês anterior</i>\n\n" +
       "<b>Metas</b>\n• <i>Criar meta de 10 mil para viagem até 12/2027</i>\n• <i>Guardei 300 na meta viagem</i>\n\n" +
+      "<b>Outros</b>\n• <i>Transferi 500 do Nubank para a poupança</i>\n• <i>Apaga a última despesa</i> · <i>Corrige o último lançamento</i>\n" +
+      "• <i>Despesas acima de 100 este mês</i> · <i>Quais meus gastos recorrentes?</i>\n• <i>Faz uma análise dos meus gastos</i>\n\n" +
       "<b>Comandos</b>\n/saldo · /resumo · /despesas · /receitas\n/metas · /contas · /vencimentos · /familia\n/cancelar · /configuracoes",
   );
 }
@@ -243,11 +290,14 @@ async function nluContext(ctx: AppContext, user: AuthUser): Promise<NluContext> 
 
 async function handleFreeText(ctx: AppContext, user: User, text: string) {
   const nctx = await nluContext(ctx, user);
-  let intent: Intent = interpret(text, nctx);
+  // continuação da última consulta ("e no mês passado?")
+  const follow = followUp(text, await getLastQuery<Query>(ctx.db, user.id), nctx);
+  let intent: Intent = follow ? { type: "query", query: follow } : interpret(text, nctx);
 
-  // IA só entra quando as regras não resolveram (ou para explicações)
-  const wantsExplanation = /\b(por que|porque|explique|explica|analise|analisa|dica|padr[aã]o|tend[eê]ncia)\b/i.test(text);
-  if (ctx.ai && (intent.type === "unknown" || wantsExplanation || (intent.type === "incomplete" && intent.missing.includes("kind")))) {
+  // IA só entra quando as regras não resolveram (ou para explicações) — com teto por pessoa
+  const wantsExplanation = /\b(por que|porque|explique|explica|dica|tend[eê]ncia)\b/i.test(text);
+  const needsAi = intent.type === "unknown" || wantsExplanation || (intent.type === "incomplete" && intent.missing.includes("kind"));
+  if (ctx.ai && needsAi && text.trim().length >= 4 && aiLimiter.take(`ai${user.id}`)) {
     const r = await ctx.ai.respond(text, { db: ctx.db, user, today: nctx.today, categories: nctx.categories, accounts: nctx.accounts, goals: nctx.goals });
     if (r.type === "text") {
       await ctx.telegram!.sendMessage(user.chatId, esc(r.text) + "\n\n<i>Resposta gerada com IA a partir dos seus dados.</i>");
@@ -257,6 +307,15 @@ async function handleFreeText(ctx: AppContext, user: User, text: string) {
   }
 
   switch (intent.type) {
+    case "greeting":
+      return sendWelcome(ctx, user);
+    case "thanks":
+      await ctx.telegram!.sendMessage(user.chatId, "Por nada! 🌙 Se precisar, é só mandar mensagem.");
+      return;
+    case "manage_last":
+      return manageLast(ctx, user, intent.action, intent.kind);
+    case "transfer":
+      return startTransfer(ctx, user, intent.amountCents, intent.fromAccountId, intent.toAccountId, intent.date);
     case "query":
       return answer(ctx, user, intent.query);
     case "entry":
@@ -293,6 +352,7 @@ async function handleFreeText(ctx: AppContext, user: User, text: string) {
         reply_markup: {
           inline_keyboard: [
             [{ text: "💸 Despesa", callback_data: `k:${p.id}:expense` }, { text: "💰 Receita", callback_data: `k:${p.id}:income` }],
+            [{ text: "🔁 Transferência entre minhas contas", callback_data: `k:${p.id}:transfer` }],
             [{ text: "Cancelar", callback_data: `x:${p.id}` }],
           ],
         },
@@ -395,6 +455,23 @@ async function handleConversationReply(ctx: AppContext, user: User, state: ConvS
       return true;
     }
 
+    case "edit_tx": {
+      await clearConversation(ctx.db, user.id);
+      await proposeTxUpdate(ctx, user, state.txId, state.field, text);
+      return true;
+    }
+
+    case "transfer_amount": {
+      const cents = parseAmountReply(text);
+      if (!cents) {
+        await tg.sendMessage(user.chatId, "Não entendi o valor. Envie só o número, por exemplo <b>500</b> — ou /cancelar.");
+        return true;
+      }
+      await clearConversation(ctx.db, user.id);
+      await startTransfer(ctx, user, cents, state.fromAccountId, state.toAccountId, state.date);
+      return true;
+    }
+
     case "contrib_amount": {
       const cents = parseAmountReply(text);
       if (!cents) {
@@ -468,6 +545,49 @@ async function contributionCard(ctx: AppContext, user: AuthUser, c: { goalId: nu
   );
 }
 
+async function transferCard(ctx: AppContext, user: AuthUser, t: TransferPayload) {
+  const accounts = await listAccounts(ctx.db, user, [user.id]);
+  const name = (id: number | null) => (id ? esc(accounts.find((a) => a.id === id)?.name ?? "?") : "<i>escolha abaixo</i>");
+  return (
+    `🔁 <b>Transferência: ${brl(t.amountCents)}</b>\n\n` +
+    `De: ${name(t.fromAccountId)}\nPara: ${name(t.toAccountId)}\nData: ${dateLabel(t.date)}\n\n` +
+    "Não conta como receita nem despesa — só move o dinheiro entre suas contas.\n\n" +
+    (t.fromAccountId && t.toAccountId ? "Deseja confirmar?" : "De qual conta para qual conta?")
+  );
+}
+
+function txUpdateCard(u: TxUpdatePayload) {
+  const label = { amount: "Valor", description: "Descrição", date: "Data", category: "Categoria" }[u.field];
+  return `✏️ <b>Alterar lançamento</b>\n\n${esc(u.description)}\n${label}: ${esc(u.fromLabel)} → <b>${esc(u.toLabel)}</b>\n\nA alteração também aparece no site. Deseja confirmar?`;
+}
+
+function txDeleteCard(d: TxDeletePayload) {
+  return (
+    `🗑️ <b>Excluir ${d.kind === "income" ? "receita" : "despesa"}?</b>\n\n${esc(d.description)} — <b>${brl(d.amountCents)}</b> (${dtFull(d.date)})\n\n` +
+    "Ela deixa de contar no saldo e nos relatórios (o site mantém o registro no histórico de auditoria)."
+  );
+}
+
+/** Botões do cartão. Transferências sem contas definidas mostram as contas para escolher. */
+async function cardKeyboardFor(ctx: AppContext, user: AuthUser, p: { id: string; version: number }, payload: PendingPayload): Promise<InlineButton[][]> {
+  if (payload.kind === "transfer" && (!payload.transfer.fromAccountId || !payload.transfer.toAccountId)) {
+    const side = payload.transfer.fromAccountId ? "to" : "from";
+    const other = side === "to" ? payload.transfer.fromAccountId : payload.transfer.toAccountId;
+    const accounts = (await listAccounts(ctx.db, user, [user.id])).filter((a) => a.id !== other);
+    return [
+      ...accounts.slice(0, 8).map((a) => [{ text: `${side === "from" ? "De" : "Para"}: ${a.name}`, callback_data: `s:${p.id}:${side}:${a.id}` }]),
+      [{ text: "✖️ Cancelar", callback_data: `x:${p.id}` }],
+    ];
+  }
+  if (payload.kind === "tx_update" || payload.kind === "tx_delete") {
+    return [[
+      { text: payload.kind === "tx_delete" ? "🗑️ Excluir" : "✅ Confirmar", callback_data: `c:${p.id}:${p.version}` },
+      { text: "✖️ Cancelar", callback_data: `x:${p.id}` },
+    ]];
+  }
+  return cardKeyboard(p);
+}
+
 function cardKeyboard(p: { id: string; version: number }): InlineButton[][] {
   return [[
     { text: "✅ Confirmar", callback_data: `c:${p.id}:${p.version}` },
@@ -477,14 +597,27 @@ function cardKeyboard(p: { id: string; version: number }): InlineButton[][] {
 }
 
 async function cardText(ctx: AppContext, user: AuthUser, payload: PendingPayload) {
-  if (payload.kind === "transaction") return draftCard(ctx, user, payload.draft);
-  if (payload.kind === "goal") return goalCard(payload.goal);
-  return contributionCard(ctx, user, payload.contribution);
+  switch (payload.kind) {
+    case "transaction":
+      return draftCard(ctx, user, payload.draft);
+    case "goal":
+      return goalCard(payload.goal);
+    case "contribution":
+      return contributionCard(ctx, user, payload.contribution);
+    case "transfer":
+      return transferCard(ctx, user, payload.transfer);
+    case "tx_update":
+      return txUpdateCard(payload.update);
+    case "tx_delete":
+      return txDeleteCard(payload.del);
+  }
 }
 
 async function sendCard(ctx: AppContext, user: User, payload: PendingPayload) {
   const p = await createPending(ctx.db, user.id, user.chatId, payload);
-  const sent = await ctx.telegram!.sendMessage(user.chatId, await cardText(ctx, user, payload), { reply_markup: { inline_keyboard: cardKeyboard(p) } });
+  const sent = await ctx.telegram!.sendMessage(user.chatId, await cardText(ctx, user, payload), {
+    reply_markup: { inline_keyboard: await cardKeyboardFor(ctx, user, p, payload) },
+  });
   if (sent) await setPendingMessage(ctx.db, p.id, payload, sent.message_id);
 }
 
@@ -572,7 +705,19 @@ function applyTextEdit(payload: PendingPayload, field: string, text: string): st
     }
     return null;
   }
-  if (field === "amount") {
+  if (payload.kind === "transfer") {
+    if (field === "amount") {
+      const c = parseAmountReply(text);
+      if (!c) return "Valor inválido.";
+      payload.transfer.amountCents = c;
+    } else if (field === "date") {
+      const v = parseDateText(text, today());
+      if (!v || v > today()) return "Data inválida. Use <b>hoje</b>, <b>ontem</b> ou <b>dd/mm/aaaa</b> (não pode ser futura).";
+      payload.transfer.date = v;
+    }
+    return null;
+  }
+  if (payload.kind === "contribution" && field === "amount") {
     const c = parseAmountReply(text);
     if (!c) return "Valor inválido.";
     payload.contribution.amountCents = payload.contribution.amountCents < 0 ? -c : c;
@@ -588,7 +733,7 @@ async function refreshCard(ctx: AppContext, user: User, p: Pending, payload: Pen
     return;
   }
   const text = await cardText(ctx, user, payload);
-  const kb = { inline_keyboard: cardKeyboard({ id: p.id, version }) };
+  const kb = { inline_keyboard: await cardKeyboardFor(ctx, user, { id: p.id, version }, payload) };
   if (messageId) {
     await ctx.telegram!.editMessageText(user.chatId, messageId, text, { reply_markup: kb });
     return;
@@ -621,6 +766,13 @@ function editMenu(p: Pending): InlineButton[][] {
       [{ text: "⬅️ Voltar", callback_data: `b:${id}` }],
     ];
   }
+  if (p.payload.kind === "transfer") {
+    return [
+      [{ text: "💲 Valor", callback_data: `f:${id}:amount` }, { text: "📅 Data", callback_data: `f:${id}:date` }],
+      [{ text: "↗️ Conta de origem", callback_data: `f:${id}:from` }, { text: "↘️ Conta de destino", callback_data: `f:${id}:to` }],
+      [{ text: "⬅️ Voltar", callback_data: `b:${id}` }],
+    ];
+  }
   return [[{ text: "💲 Valor", callback_data: `f:${id}:amount` }], [{ text: "⬅️ Voltar", callback_data: `b:${id}` }]];
 }
 
@@ -638,6 +790,10 @@ async function onCallback(ctx: AppContext, cb: TgCallbackQuery, op: string) {
   const parts = (cb.data ?? "").split(":");
   const [action, id] = parts;
   ctx.log.info("telegram.botao", { op, user_id: user.id, action });
+  if (!messageLimiter.take(`u${user.id}`)) {
+    await tg.answerCallbackQuery(cb.id, "Muitas ações em pouco tempo. Aguarde um minuto.");
+    return;
+  }
 
   // ---- ações sem rascunho ----
   if (action === "x" && id === "none") {
@@ -662,6 +818,29 @@ async function onCallback(ctx: AppContext, cb: TgCallbackQuery, op: string) {
     await tg.answerCallbackQuery(cb.id);
     if (q) await answer(ctx, user, q);
     return;
+  }
+  if (action === "q") {
+    await tg.answerCallbackQuery(cb.id);
+    if (id === "help") return sendHelp(ctx, user);
+    const q = quickQuery(id);
+    if (q) await answer(ctx, user, q);
+    return;
+  }
+  if (action === "m") {
+    await tg.answerCallbackQuery(cb.id);
+    return showManageMenu(ctx, user, Number(id));
+  }
+  if (action === "mf") {
+    await tg.answerCallbackQuery(cb.id);
+    return startTxEdit(ctx, user, Number(id), parts[2]);
+  }
+  if (action === "mc") {
+    await tg.answerCallbackQuery(cb.id);
+    return proposeTxUpdate(ctx, user, Number(id), "category", parts[2]);
+  }
+  if (action === "md") {
+    await tg.answerCallbackQuery(cb.id);
+    return proposeTxDelete(ctx, user, Number(id));
   }
   if (action === "g") {
     await tg.answerCallbackQuery(cb.id);
@@ -711,9 +890,16 @@ async function onCallback(ctx: AppContext, cb: TgCallbackQuery, op: string) {
       return tg.answerCallbackQuery(cb.id);
     case "f":
       return editField(ctx, user, cb, pending, parts[2], messageId);
-    case "s":
     case "k":
-      return setField(ctx, user, cb, pending, action === "k" ? "kind" : parts[2], action === "k" ? parts[2] : parts[3], messageId);
+      if (parts[2] === "transfer" && payload.kind === "transaction") {
+        await cancelPending(ctx.db, pending.id, user.id);
+        await tg.editMessageText(chatId, messageId, "Ok, vamos registrar como transferência entre suas contas.");
+        await tg.answerCallbackQuery(cb.id);
+        return startTransfer(ctx, user, payload.draft.amountCents, null, null, payload.draft.date);
+      }
+      return setField(ctx, user, cb, pending, "kind", parts[2], messageId);
+    case "s":
+      return setField(ctx, user, cb, pending, parts[2], parts[3], messageId);
     case "c":
       return confirm(ctx, user, cb, pending, messageId, op);
   }
@@ -735,6 +921,15 @@ async function editField(ctx: AppContext, user: User, cb: TgCallbackQuery, p: Pe
     await tg.answerCallbackQuery(cb.id);
     await tg.sendMessage(user.chatId, prompts[field]);
     return;
+  }
+  if (p.payload.kind === "transfer" && (field === "from" || field === "to")) {
+    const t = p.payload.transfer;
+    const other = field === "from" ? t.toAccountId : t.fromAccountId;
+    const accs = (await listAccounts(ctx.db, user, [user.id])).filter((a) => a.id !== other);
+    const rows = accs.map((a) => [{ text: a.name, callback_data: `s:${id}:${field}:${a.id}` }]);
+    rows.push([{ text: "⬅️ Voltar", callback_data: `e:${id}` }]);
+    await tg.editMessageText(user.chatId, messageId, field === "from" ? "De qual conta sai o dinheiro?" : "Para qual conta vai o dinheiro?", { reply_markup: { inline_keyboard: rows } });
+    return tg.answerCallbackQuery(cb.id);
   }
   if (p.payload.kind !== "transaction") return tg.answerCallbackQuery(cb.id);
   const d = p.payload.draft;
@@ -759,7 +954,14 @@ async function editField(ctx: AppContext, user: User, cb: TgCallbackQuery, p: Pe
 
 async function setField(ctx: AppContext, user: User, cb: TgCallbackQuery, p: Pending, field: string, value: string, messageId: number) {
   const payload = p.payload;
-  if (payload.kind === "goal" && field === "scope") {
+  if (payload.kind === "transfer" && (field === "from" || field === "to")) {
+    const acc = (await listAccounts(ctx.db, user, [user.id])).find((a) => a.id === Number(value));
+    if (!acc) return ctx.telegram!.answerCallbackQuery(cb.id, "Conta inválida.");
+    const other = field === "from" ? payload.transfer.toAccountId : payload.transfer.fromAccountId;
+    if (other === acc.id) return ctx.telegram!.answerCallbackQuery(cb.id, "Origem e destino precisam ser contas diferentes.");
+    if (field === "from") payload.transfer.fromAccountId = acc.id;
+    else payload.transfer.toAccountId = acc.id;
+  } else if (payload.kind === "goal" && field === "scope") {
     if (value === "family" && user.family_access === "none") {
       await ctx.telegram!.answerCallbackQuery(cb.id, "Sua conta não participa das metas da família.");
       return;
@@ -793,6 +995,10 @@ async function setField(ctx: AppContext, user: User, cb: TgCallbackQuery, p: Pen
 
 async function confirm(ctx: AppContext, user: User, cb: TgCallbackQuery, p: Pending, messageId: number, op: string) {
   const tg = ctx.telegram!;
+  if (p.payload.kind === "transfer" && (!p.payload.transfer.fromAccountId || !p.payload.transfer.toAccountId)) {
+    await tg.answerCallbackQuery(cb.id, "Escolha as contas de origem e destino antes de confirmar.");
+    return;
+  }
   let result;
   try {
     result = await confirmPending(ctx.db, p.id, user.id, p.version, async (q, locked) => {
@@ -818,12 +1024,30 @@ async function confirm(ctx: AppContext, user: User, cb: TgCallbackQuery, p: Pend
         const g = await createGoalWith(q, user, { name: pl.goal.name, targetCents: pl.goal.targetCents, deadline: pl.goal.deadline, scope: pl.goal.scope }, "telegram");
         return { resultId: g.id, value: `✅ <b>Meta criada:</b> ${esc(g.name)} — ${brl(g.targetCents)}.\nEnvie <i>guardei 200 na meta ${esc(g.name.toLowerCase())}</i> para registrar contribuições.` };
       }
-      const r = await contributeWith(q, user, pl.contribution.goalId, { amountCents: pl.contribution.amountCents }, "telegram");
-      return {
-        resultId: r.id,
-        value: `✅ <b>${pl.contribution.amountCents < 0 ? "Retirada registrada" : "Contribuição registrada"}</b> em ${esc(r.goal.name)}.\n` +
-          `Agora: ${brl(r.goal.savedCents)} de ${brl(r.goal.targetCents)} (${Math.round(r.goal.percent)}%)${r.goal.achievedAt ? " — meta atingida! 🎉" : ""}.`,
-      };
+      if (pl.kind === "contribution") {
+        const r = await contributeWith(q, user, pl.contribution.goalId, { amountCents: pl.contribution.amountCents }, "telegram");
+        return {
+          resultId: r.id,
+          value: `✅ <b>${pl.contribution.amountCents < 0 ? "Retirada registrada" : "Contribuição registrada"}</b> em ${esc(r.goal.name)}.\n` +
+            `Agora: ${brl(r.goal.savedCents)} de ${brl(r.goal.targetCents)} (${Math.round(r.goal.percent)}%)${r.goal.achievedAt ? " — meta atingida! 🎉" : ""}.`,
+        };
+      }
+      if (pl.kind === "transfer") {
+        const t = pl.transfer;
+        const tr = await createTransferWith(q, user, { fromAccountId: t.fromAccountId, toAccountId: t.toAccountId, amountCents: t.amountCents, date: t.date }, "telegram");
+        return {
+          resultId: tr.id,
+          value: `✅ <b>Transferência registrada</b>\n${esc(tr.fromAccountName)} → ${esc(tr.toAccountName)}: <b>${brl(tr.amountCents)}</b> (${dateLabel(tr.date)}).\nO saldo de cada conta já foi atualizado.`,
+        };
+      }
+      if (pl.kind === "tx_update") {
+        const u = pl.update;
+        const updated = await updateTransactionWith(q, user, u.txId, u.patch, "telegram");
+        return { resultId: updated.id, value: `✅ <b>Lançamento alterado</b>\n${esc(updated.description)} — ${brl(updated.amountCents)} (${dtFull(updated.date)}).` };
+      }
+      const d = pl.del;
+      await deleteTransactionWith(q, user, d.txId, "one", "telegram");
+      return { resultId: d.txId, value: `🗑️ <b>Excluído:</b> ${esc(d.description)} — ${brl(d.amountCents)}.` };
     });
   } catch (err) {
     // NADA foi gravado (a transação do banco foi desfeita) e a ação segue pendente.
@@ -872,10 +1096,144 @@ async function payBill(ctx: AppContext, user: User, cb: TgCallbackQuery, txId: n
   await tg.answerCallbackQuery(cb.id, "Pagamento registrado!");
 }
 
+// =========================== transferências ===========================
+
+async function startTransfer(ctx: AppContext, user: User, amountCents: number | null, fromAccountId: number | null, toAccountId: number | null, date: string) {
+  const accounts = await listAccounts(ctx.db, user, [user.id]);
+  if (accounts.length < 2) {
+    await ctx.telegram!.sendMessage(
+      user.chatId,
+      "Para transferir entre contas você precisa ter pelo menos duas contas cadastradas (ex.: corrente e poupança).\nCrie no site em <b>Configurações → Suas contas</b>.",
+    );
+    return;
+  }
+  if (!amountCents) {
+    await setConversation(ctx.db, user.id, { step: "transfer_amount", fromAccountId, toAccountId, date });
+    await ctx.telegram!.sendMessage(user.chatId, "Qual o valor da transferência?");
+    return;
+  }
+  await sendCard(ctx, user, { kind: "transfer", transfer: { amountCents, fromAccountId, toAccountId: toAccountId === fromAccountId ? null : toAccountId, date: date > today() ? today() : date } });
+}
+
+// =========================== gerenciar lançamentos já registrados ===========================
+
+async function ownTransaction(ctx: AppContext, user: User, txId: number) {
+  if (!Number.isInteger(txId) || txId <= 0) return null;
+  const [tx] = await getTransactions(ctx.db, [txId]);
+  const { rows } = await ctx.db.query<{ deleted: boolean }>("SELECT deleted_at IS NOT NULL AS deleted FROM transactions WHERE id = $1", [txId]);
+  // só o próprio usuário, e só lançamentos ativos
+  return tx && tx.userId === user.id && !rows[0]?.deleted ? tx : null;
+}
+
+async function manageLast(ctx: AppContext, user: User, action: "edit" | "delete", kind: "income" | "expense" | null) {
+  const { rows } = await ctx.db.query<{ id: number }>(
+    `SELECT id FROM transactions WHERE user_id = $1 AND deleted_at IS NULL ${kind ? "AND kind = $2" : ""}
+      ORDER BY created_at DESC, id DESC LIMIT 1`,
+    kind ? [user.id, kind] : [user.id],
+  );
+  if (!rows[0]) {
+    await ctx.telegram!.sendMessage(user.chatId, "Não encontrei lançamentos seus para alterar.");
+    return;
+  }
+  if (action === "delete") return proposeTxDelete(ctx, user, rows[0].id);
+  return showManageMenu(ctx, user, rows[0].id);
+}
+
+async function showManageMenu(ctx: AppContext, user: User, txId: number) {
+  const tx = await ownTransaction(ctx, user, txId);
+  if (!tx) {
+    await ctx.telegram!.sendMessage(user.chatId, "Esse lançamento não está disponível (ou não é seu).");
+    return;
+  }
+  await ctx.telegram!.sendMessage(
+    user.chatId,
+    `🧾 <b>${esc(tx.description)}</b>\n${tx.kind === "income" ? "Receita" : "Despesa"} de <b>${brl(tx.amountCents)}</b> · ${dtFull(tx.date)}\n` +
+      `Categoria: ${esc(tx.categoryName ?? "Sem categoria")}${tx.paymentMethod ? ` · ${PAYMENT_LABELS[tx.paymentMethod]}` : ""}\n` +
+      (tx.installmentNumber ? `Parcela ${tx.installmentNumber}/${tx.installmentTotal} (só esta será alterada)\n` : "") +
+      "\nO que deseja fazer?",
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "💲 Valor", callback_data: `mf:${tx.id}:amount` }, { text: "📝 Descrição", callback_data: `mf:${tx.id}:description` }],
+          [{ text: "📅 Data", callback_data: `mf:${tx.id}:date` }, { text: "📂 Categoria", callback_data: `mf:${tx.id}:category` }],
+          [{ text: "🗑️ Excluir", callback_data: `md:${tx.id}` }, { text: "Fechar", callback_data: "x:none" }],
+        ],
+      },
+    },
+  );
+}
+
+async function startTxEdit(ctx: AppContext, user: User, txId: number, field: string) {
+  const tx = await ownTransaction(ctx, user, txId);
+  if (!tx) {
+    await ctx.telegram!.sendMessage(user.chatId, "Esse lançamento não está disponível (ou não é seu).");
+    return;
+  }
+  if (field === "category") {
+    const cats = (await listCategories(ctx.db)).filter((c) => c.kind === tx.kind);
+    const rows: InlineButton[][] = [];
+    for (let i = 0; i < cats.length; i += 2) rows.push(cats.slice(i, i + 2).map((c) => ({ text: c.name, callback_data: `mc:${tx.id}:${c.id}` })));
+    await ctx.telegram!.sendMessage(user.chatId, `Nova categoria para <b>${esc(tx.description)}</b>:`, { reply_markup: { inline_keyboard: rows } });
+    return;
+  }
+  if (field !== "amount" && field !== "description" && field !== "date") return;
+  await setConversation(ctx.db, user.id, { step: "edit_tx", txId, field });
+  const prompt = { amount: "Envie o novo valor (ex.: 45,90).", description: "Envie a nova descrição.", date: "Envie a nova data: <b>hoje</b>, <b>ontem</b> ou <b>dd/mm/aaaa</b>." }[field];
+  await ctx.telegram!.sendMessage(user.chatId, prompt);
+}
+
+async function proposeTxUpdate(ctx: AppContext, user: User, txId: number, field: "amount" | "description" | "date" | "category", value: string) {
+  const tg = ctx.telegram!;
+  const tx = await ownTransaction(ctx, user, txId);
+  if (!tx) {
+    await tg.sendMessage(user.chatId, "Esse lançamento não está disponível (ou não é seu).");
+    return;
+  }
+  let patch: Record<string, unknown>;
+  let fromLabel: string;
+  let toLabel: string;
+  if (field === "amount") {
+    const c = parseAmountReply(value);
+    if (!c) return void (await tg.sendMessage(user.chatId, "Valor inválido. Nada foi alterado."));
+    patch = { amountCents: c };
+    fromLabel = brl(tx.amountCents);
+    toLabel = brl(c);
+  } else if (field === "description") {
+    const v = value.trim();
+    if (!v || v.length > 160) return void (await tg.sendMessage(user.chatId, "A descrição precisa ter entre 1 e 160 caracteres. Nada foi alterado."));
+    patch = { description: v };
+    fromLabel = tx.description;
+    toLabel = v;
+  } else if (field === "date") {
+    const d = parseDateText(value, today());
+    if (!d) return void (await tg.sendMessage(user.chatId, "Data inválida. Nada foi alterado."));
+    patch = { date: d };
+    fromLabel = dtFull(tx.date);
+    toLabel = dtFull(d);
+  } else {
+    const cat = (await listCategories(ctx.db)).find((c) => c.id === Number(value) && c.kind === tx.kind);
+    if (!cat) return void (await tg.sendMessage(user.chatId, "Categoria inválida. Nada foi alterado."));
+    patch = { categoryId: cat.id };
+    fromLabel = tx.categoryName ?? "Sem categoria";
+    toLabel = cat.name;
+  }
+  await sendCard(ctx, user, { kind: "tx_update", update: { txId, description: tx.description, field, fromLabel, toLabel, patch } });
+}
+
+async function proposeTxDelete(ctx: AppContext, user: User, txId: number) {
+  const tx = await ownTransaction(ctx, user, txId);
+  if (!tx) {
+    await ctx.telegram!.sendMessage(user.chatId, "Esse lançamento não está disponível (ou não é seu).");
+    return;
+  }
+  await sendCard(ctx, user, { kind: "tx_delete", del: { txId, description: tx.description, amountCents: tx.amountCents, date: tx.date, kind: tx.kind } });
+}
+
 // =========================== consultas ===========================
 
 export async function answer(ctx: AppContext, user: User, query: Query) {
   const r = await buildReply(ctx.db, user, query);
+  if (["spend", "summary", "by_category", "top", "list"].includes(query.q)) await saveLastQuery(ctx.db, user.id, query);
   await ctx.telegram!.sendMessage(user.chatId, r.text, r.keyboard?.length ? { reply_markup: { inline_keyboard: r.keyboard } } : {});
 }
 

@@ -8,8 +8,9 @@ import { PAYMENT_LABELS } from "../services/transactions.js";
 import type { InlineButton } from "./api.js";
 import {
   compareMonths, familyOverview, getBalance, getCategoryBreakdown, getCategoryTotal, getEvolution, getFlow, getGoals,
-  getPendingBills, getPeriodTotals, getTransactionsList, type GoalDetail,
+  getIncomeSources, getInsights, getPendingBills, getPeriodTotals, getRecurring, getSpendable, getTransactionsList, type GoalDetail,
 } from "./data.js";
+import { listTransfers } from "../services/transfers.js";
 import { bar, brl, dt, dtFull, esc, signed } from "./format.js";
 import { monthPeriod, type Period, type Query } from "./nlu.js";
 
@@ -141,7 +142,9 @@ export async function buildReply(q: Queryable, user: AuthUser, query: Query): Pr
           `${query.kind === "income" ? "💰 <b>Últimas receitas</b>" : "💸 <b>Últimas despesas</b>"}\n\n` +
           items
             .map((i) => `• ${dt(i.date)} — ${esc(i.description)}: <b>${brl(i.amountCents)}</b>${i.category ? ` · ${esc(i.category)}` : ""}${i.paymentMethod ? ` · ${PAYMENT_LABELS[i.paymentMethod]}` : ""}`)
-            .join("\n"),
+            .join("\n") +
+          "\n\n<i>Toque num item abaixo para editar ou excluir.</i>",
+        keyboard: manageButtons(items),
       };
     }
 
@@ -242,7 +245,95 @@ export async function buildReply(q: Queryable, user: AuthUser, query: Query): Pr
           `\n\nVariação no período: <b>${signed(last - first)}</b>`,
       };
     }
+
+    case "list": {
+      const items = await getTransactionsList(q, ids, {
+        kind: query.kind, from: query.period.from, to: query.period.to, categoryId: query.categoryId,
+        minCents: query.minCents, maxCents: query.maxCents, order: "largest", limit: 15,
+      });
+      const filter = query.minCents ? `acima de ${brl(query.minCents)}` : query.maxCents ? `até ${brl(query.maxCents)}` : "";
+      if (!items.length) return { text: `Nenhuma ${query.kind === "income" ? "receita" : "despesa"} ${filter} ${periodTitle(query.period)}.` };
+      const total = items.reduce((s2, i) => s2 + i.amountCents, 0);
+      return {
+        text:
+          `🔎 <b>${query.kind === "income" ? "Receitas" : "Despesas"} ${filter} ${periodTitle(query.period)}</b>\n\n` +
+          items.map((i) => `• ${dt(i.date)} — ${esc(i.description)}: <b>${brl(i.amountCents)}</b>`).join("\n") +
+          `\n\n${plural(items.length, "lançamento", "lançamentos")} · total ${brl(total)}`,
+        keyboard: manageButtons(items),
+      };
+    }
+
+    case "spendable": {
+      const s2 = await getSpendable(q, user);
+      let text =
+        `🧮 <b>Até o fim do mês (${dtFull(s2.monthEnd)})</b>\n\n` +
+        `Saldo atual: ${brl(s2.balanceCents)}\n` +
+        `− Contas a pagar até lá: ${brl(s2.pendingExpensesCents)}\n` +
+        (s2.pendingIncomeCents ? `+ Receitas previstas: ${brl(s2.pendingIncomeCents)}\n` : "") +
+        `= <b>Disponível: ${brl(s2.availableCents)}</b>`;
+      text += s2.availableCents > 0
+        ? `\n\nIsso dá cerca de <b>${brl(s2.perDayCents)} por dia</b> nos próximos ${plural(s2.daysLeft, "dia", "dias")}.`
+        : "\n\n⚠️ As contas pendentes já superam o saldo. Vale rever os gastos ou antecipar receitas.";
+      text += "\n<i>Considera só o que está registrado no Luna Finance.</i>";
+      return { text };
+    }
+
+    case "recurring": {
+      const r = await getRecurring(q, user);
+      if (!r.registered.length && !r.detected.length) return { text: "Não encontrei gastos recorrentes. Cadastre contas mensais no site (opção “Todo mês”)." };
+      let text = "🔁 <b>Gastos e receitas recorrentes</b>";
+      if (r.registered.length) {
+        text += "\n\n<b>Cadastrados</b>\n" + r.registered.map((x) => `• ${esc(x.description)}: ${brl(x.amountCents)} todo dia ${x.dayOfMonth}${x.kind === "income" ? " (receita)" : ""}`).join("\n");
+      }
+      if (r.detected.length) {
+        text += "\n\n<b>Parecem recorrentes</b> (3+ meses seguidos)\n" + r.detected.map((x) => `• ${esc(x.description)}: ~${brl(x.avgCents)}/mês`).join("\n");
+        text += "\n<i>Dica: cadastre-os como recorrentes no site para receber lembretes.</i>";
+      }
+      return { text };
+    }
+
+    case "income_sources": {
+      const r = await getIncomeSources(q, user);
+      if (!r.sources.length) return { text: "Não há receitas registradas nos últimos 3 meses." };
+      return {
+        text:
+          `💼 <b>Suas fontes de renda</b> (${dt(r.from)} a ${dt(r.to)})\n\n` +
+          r.sources.map((x) => `• ${esc(x.description)}: <b>${brl(x.cents)}</b> (${pct(x.percent)})`).join("\n") +
+          `\n\nTotal: ${brl(r.totalCents)}`,
+      };
+    }
+
+    case "insights": {
+      const i = await getInsights(q, user);
+      const lines: string[] = [`🧠 <b>Análise de ${monthNamePt(i.month).split(" ")[0]}</b> (até hoje)`, ""];
+      lines.push(`Gastos até agora: ${brl(i.expenseSoFarCents)} · no ritmo atual, ~${brl(i.projectedExpenseCents)} no mês.`);
+      if (i.avgMonthlyExpenseCents) {
+        const diff = i.projectedExpenseCents - i.avgMonthlyExpenseCents;
+        lines.push(`Sua média dos últimos ${plural(i.monthsOfHistory, "mês", "meses")}: ${brl(i.avgMonthlyExpenseCents)} → projeção ${diff >= 0 ? "acima" : "abaixo"} em ${brl(Math.abs(diff))}.`);
+      } else {
+        lines.push("Ainda não há meses anteriores suficientes para comparar.");
+      }
+      if (i.topCategory) lines.push(`Maior categoria: ${esc(i.topCategory.name)} (${pct(i.topCategory.percent)} dos gastos).`);
+      if (i.biggestIncrease) lines.push(`Maior alta: ${esc(i.biggestIncrease.name)} — ${brl(i.biggestIncrease.currentCents)} contra média de ${brl(i.biggestIncrease.avgCents)}.`);
+      if (i.fixedSharePercent !== null) lines.push(`Gastos fixos: ${pct(i.fixedSharePercent)} do total.`);
+      if (i.savingsRatePercent !== null) lines.push(`Taxa de poupança no mês: ${pct(i.savingsRatePercent)}.`);
+      lines.push("", "<i>Análise baseada só nos seus lançamentos. Não é recomendação de investimento.</i>");
+      return { text: lines.join("\n") };
+    }
+
+    case "transfers": {
+      const list = await listTransfers(q, user, 10);
+      if (!list.length) return { text: "Você não tem transferências entre contas registradas." };
+      return {
+        text: "🔁 <b>Transferências entre suas contas</b>\n\n" + list.map((x) => `• ${dt(x.date)} — ${esc(x.fromAccountName)} → ${esc(x.toAccountName)}: <b>${brl(x.amountCents)}</b>`).join("\n"),
+      };
+    }
   }
+}
+
+/** Botões "✏️" para gerenciar lançamentos de uma lista (sempre do próprio usuário). */
+function manageButtons(items: Array<{ id: number; description: string; amountCents: number; userId: number }>): InlineButton[][] {
+  return items.slice(0, 5).map((i) => [{ text: `✏️ ${i.description.slice(0, 26)} · ${brl(i.amountCents)}`, callback_data: `m:${i.id}` }]);
 }
 
 export function previousMonthLabel() {

@@ -74,15 +74,18 @@ export function createTelegramApi(token: string, fetchImpl: typeof fetch = fetch
       clearTimeout(timer);
     }
   }
+  /** Até 3 tentativas com backoff exponencial (0,5s → 1s) para falhas transitórias. */
   async function call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    try {
-      return await once<T>(method, params);
-    } catch (err) {
-      if (!(err instanceof TelegramError) || !err.transient || method === "getUpdates") throw err;
-      const wait = err.errorCode === 429 ? Math.min(10, err.retryAfter ?? 1) * 1000 : 1000;
-      if (err.errorCode === 429 && (err.retryAfter ?? 0) > 10) throw err; // não segura a requisição por muito tempo
-      await sleep(wait);
-      return once<T>(method, params);
+    const maxAttempts = method === "getUpdates" ? 1 : 3;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await once<T>(method, params);
+      } catch (err) {
+        if (!(err instanceof TelegramError) || !err.transient || attempt >= maxAttempts) throw err;
+        if (err.errorCode === 429 && (err.retryAfter ?? 0) > 10) throw err; // não segura a requisição por muito tempo
+        const wait = err.errorCode === 429 ? Math.max(1, err.retryAfter ?? 1) * 1000 : 500 * 2 ** (attempt - 1);
+        await sleep(wait);
+      }
     }
   }
   return {

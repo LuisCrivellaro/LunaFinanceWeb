@@ -22,7 +22,9 @@ const BALANCE_SQL = `
   a.initial_balance_cents + COALESCE((
     SELECT sum(CASE WHEN t.kind = 'income' THEN t.amount_cents ELSE -t.amount_cents END)
       FROM transactions t
-     WHERE t.account_id = a.id AND t.status = 'paid' AND t.deleted_at IS NULL), 0)`;
+     WHERE t.account_id = a.id AND t.status = 'paid' AND t.deleted_at IS NULL), 0)
+  + COALESCE((SELECT sum(tr.amount_cents) FROM transfers tr WHERE tr.to_account_id = a.id AND tr.deleted_at IS NULL), 0)
+  - COALESCE((SELECT sum(tr.amount_cents) FROM transfers tr WHERE tr.from_account_id = a.id AND tr.deleted_at IS NULL), 0)`;
 
 export async function listAccounts(q: Queryable, viewer: AuthUser, userIds: number[], includeArchived = false): Promise<AccountRow[]> {
   const visible = userIds.filter((id) => canSeeDetailsOf(viewer, id));

@@ -12,6 +12,7 @@ import { setNow } from "../src/lib/clock.js";
 import { runScheduledJobs } from "../src/notifications/jobs.js";
 import { createTelegramApi, TelegramError } from "../src/telegram/api.js";
 import type { TgUpdate } from "../src/telegram/bot.js";
+import { aiLimiter, messageLimiter } from "../src/telegram/throttle.js";
 import { WEBHOOK_SECRET, setupTestApp, type TestApp } from "./helpers.js";
 
 let t: TestApp;
@@ -29,6 +30,9 @@ afterAll(async () => {
 beforeEach(() => {
   t.tg.clear();
   setNow(NOW);
+  // os testes enviam dezenas de mensagens por segundo; o limite é testado à parte
+  messageLimiter.reset();
+  aiLimiter.reset();
 });
 
 // ------------------------------- utilitários -------------------------------

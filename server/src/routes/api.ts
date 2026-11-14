@@ -18,6 +18,7 @@ import {
   createTransaction, deleteTransaction, listBills, listRecurrences, listTransactions, markPaid, updateRecurrence, updateTransaction,
 } from "../services/transactions.js";
 import { createLinkCode, unlinkTelegram } from "../telegram/linking.js";
+import { createTransfer, deleteTransfer, listTransfers } from "../services/transfers.js";
 
 export function apiRouter(ctx: AppContext) {
   const r = Router();
@@ -90,6 +91,14 @@ export function apiRouter(ctx: AppContext) {
   r.post("/accounts", h(async (req) => createAccount(db, req.user!, req.body)));
   r.patch("/accounts/:id", h(async (req) => {
     await updateAccount(db, req.user!, idParam(req), req.body);
+    return { ok: true };
+  }));
+
+  // ---------------- Transferências entre contas próprias ----------------
+  r.get("/transfers", h(async (req) => listTransfers(db, req.user!)));
+  r.post("/transfers", h(async (req) => createTransfer(db, req.user!, req.body)));
+  r.delete("/transfers/:id", h(async (req) => {
+    await deleteTransfer(db, req.user!, idParam(req));
     return { ok: true };
   }));
 

@@ -41,7 +41,16 @@ async function createPg(url: string): Promise<Db> {
     /sslmode=require/.test(url) || process.env.DATABASE_SSL === "true"
       ? { rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== "false" }
       : undefined;
-  const pool = new pg.Pool({ connectionString: url.replace(/[?&]sslmode=require/, ""), ssl, max: 10 });
+  const pool = new pg.Pool({
+    connectionString: url.replace(/[?&]sslmode=require/, ""),
+    ssl,
+    max: 10,
+    // um banco travado não pode segurar requisições para sempre
+    connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS ?? 5000),
+    idleTimeoutMillis: 30000,
+    statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS ?? 15000),
+    query_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS ?? 15000) + 2000,
+  });
   pool.on("error", (err) => console.error("[db] erro no pool:", err.message));
   const wrap = (c: pg.Pool | pg.PoolClient): Queryable => ({
     async query(sql, params) {

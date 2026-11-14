@@ -37,12 +37,25 @@ export function createApp(ctx: AppContext) {
     }),
   );
 
+  // Disponibilidade para monitores externos (sem dados pessoais nem financeiros)
   app.get("/healthz", async (_req, res) => {
+    const started = Date.now();
     try {
       await ctx.db.query("SELECT 1");
-      res.json({ ok: true });
+      const { rows } = await ctx.db.query<{ failed: number; done: number; last: Date | null }>(
+        `SELECT count(*) FILTER (WHERE status = 'failed')::int AS failed,
+                count(*) FILTER (WHERE status = 'done')::int AS done, max(received_at) AS last
+           FROM telegram_updates WHERE received_at > now() - interval '1 hour'`,
+      );
+      res.json({
+        ok: true,
+        db: { ok: true, ms: Date.now() - started },
+        telegram: { configured: ctx.config.telegram.enabled, lastHour: { processed: rows[0].done, failed: rows[0].failed }, lastUpdateAt: rows[0].last },
+        ai: { enabled: Boolean(ctx.ai) },
+        uptimeSec: Math.round(process.uptime()),
+      });
     } catch {
-      res.status(503).json({ ok: false });
+      res.status(503).json({ ok: false, db: { ok: false } });
     }
   });
 

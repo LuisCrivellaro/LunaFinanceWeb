@@ -9,7 +9,7 @@ import { dirname } from "node:path";
 import { arg, withContext } from "./_cli.js";
 
 export const BACKUP_TABLES = [
-  "users", "accounts", "categories", "recurrences", "transactions", "goals", "goal_contributions",
+  "users", "accounts", "categories", "recurrences", "transactions", "transfers", "goals", "goal_contributions",
   "telegram_links", "notification_log", "audit_log",
 ];
 

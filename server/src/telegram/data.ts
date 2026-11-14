@@ -63,7 +63,10 @@ export async function getCategoryBreakdown(q: Queryable, userIds: number[], from
 export async function getTransactionsList(
   q: Queryable,
   userIds: number[],
-  opts: { kind?: "income" | "expense"; from?: string; to?: string; categoryId?: number | null; search?: string; limit?: number; order?: "recent" | "largest" },
+  opts: {
+    kind?: "income" | "expense"; from?: string; to?: string; categoryId?: number | null; search?: string; limit?: number;
+    order?: "recent" | "largest"; minCents?: number | null; maxCents?: number | null;
+  },
 ) {
   const where = [ACTIVE, "t.user_id = ANY($1::int[])"];
   const vals: unknown[] = [userIds];
@@ -76,6 +79,8 @@ export async function getTransactionsList(
   if (opts.to) add("t.date <= ?", opts.to);
   if (opts.categoryId) add("t.category_id = ?", opts.categoryId);
   if (opts.search) add("t.description ILIKE ?", `%${opts.search.replace(/[\\%_]/g, (m) => "\\" + m)}%`);
+  if (opts.minCents) add("t.amount_cents >= ?", opts.minCents);
+  if (opts.maxCents) add("t.amount_cents <= ?", opts.maxCents);
   const limit = Math.min(Math.max(opts.limit ?? 10, 1), 30);
   const order = opts.order === "largest" ? "t.amount_cents DESC, t.date DESC" : "t.date DESC, t.id DESC";
   vals.push(today());
@@ -231,4 +236,121 @@ export async function findPossibleDuplicate(q: Queryable, userId: number, kind: 
     [userId, kind, amountCents, addDays(date, -2), addDays(date, 2), date],
   );
   return rows[0] ?? null;
+}
+
+/**
+ * Quanto ainda dá para gastar até o fim do mês:
+ *   saldo atual − contas pendentes até o fim do mês (incl. atrasadas) + receitas pendentes até o fim do mês.
+ * Não desconta metas (dinheiro guardado em metas não é bloqueado no saldo).
+ */
+export async function getSpendable(q: Queryable, user: AuthUser) {
+  const t = today();
+  const { end } = monthRange(t.slice(0, 7));
+  const bal = await getBalance(q, user);
+  const { rows } = await q.query<{ exp: number; inc: number }>(
+    `SELECT COALESCE(sum(amount_cents) FILTER (WHERE kind='expense'),0)::bigint AS exp,
+            COALESCE(sum(amount_cents) FILTER (WHERE kind='income' AND date >= $2),0)::bigint AS inc
+       FROM transactions WHERE deleted_at IS NULL AND user_id = $1 AND status = 'pending' AND date <= $3`,
+    [user.id, t, end],
+  );
+  const available = bal.totalCents - rows[0].exp + rows[0].inc;
+  const daysLeft = Math.round((Date.parse(end) - Date.parse(t)) / 86400000) + 1;
+  return {
+    balanceCents: bal.totalCents,
+    pendingExpensesCents: rows[0].exp,
+    pendingIncomeCents: rows[0].inc,
+    availableCents: available,
+    daysLeft,
+    perDayCents: available > 0 ? Math.floor(available / daysLeft) : 0,
+    monthEnd: end,
+  };
+}
+
+/** Recorrências cadastradas + gastos que se repetem (mesma descrição em 3+ meses, valor estável). */
+export async function getRecurring(q: Queryable, user: AuthUser) {
+  const { rows: registered } = await q.query<{ description: string; amountCents: number; dayOfMonth: number; kind: string }>(
+    `SELECT description, amount_cents AS "amountCents", day_of_month AS "dayOfMonth", kind
+       FROM recurrences WHERE user_id = $1 AND active ORDER BY kind DESC, day_of_month`,
+    [user.id],
+  );
+  const since = monthRange(shiftMonth(currentMonth(), -3)).start;
+  const { rows: detected } = await q.query<{ description: string; months: number; avgCents: number; minCents: number; maxCents: number }>(
+    `SELECT min(description) AS description, count(DISTINCT to_char(date,'YYYY-MM'))::int AS months,
+            round(avg(amount_cents))::bigint AS "avgCents", min(amount_cents)::bigint AS "minCents", max(amount_cents)::bigint AS "maxCents"
+       FROM transactions
+      WHERE deleted_at IS NULL AND user_id = $1 AND kind = 'expense' AND recurrence_id IS NULL AND installment_group IS NULL AND date >= $2
+      GROUP BY lower(trim(description))
+     HAVING count(DISTINCT to_char(date,'YYYY-MM')) >= 3 AND max(amount_cents) <= min(amount_cents) * 1.5
+      ORDER BY avg(amount_cents) DESC LIMIT 8`,
+    [user.id, since],
+  );
+  return { registered, detected };
+}
+
+/** Fontes de renda dos últimos 3 meses (por descrição) com participação no total. */
+export async function getIncomeSources(q: Queryable, user: AuthUser) {
+  const from = monthRange(shiftMonth(currentMonth(), -2)).start;
+  const { rows } = await q.query<{ description: string; category: string | null; cents: number; n: number }>(
+    `SELECT min(t.description) AS description, min(c.name) AS category, sum(t.amount_cents)::bigint AS cents, count(*)::int AS n
+       FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
+      WHERE t.deleted_at IS NULL AND t.user_id = $1 AND t.kind = 'income' AND t.date BETWEEN $2 AND $3
+      GROUP BY lower(trim(t.description)) ORDER BY cents DESC LIMIT 8`,
+    [user.id, from, today()],
+  );
+  const total = rows.reduce((s, r) => s + r.cents, 0);
+  return { from, to: today(), totalCents: total, sources: rows.map((r) => ({ ...r, percent: total ? Math.round((r.cents / total) * 1000) / 10 : 0 })) };
+}
+
+/**
+ * Análise de comportamento (determinística): mês atual × média dos 3 meses anteriores,
+ * categoria que mais cresceu, participação de gastos fixos e taxa de poupança.
+ */
+export async function getInsights(q: Queryable, user: AuthUser) {
+  const ym = currentMonth();
+  const t = today();
+  const { start, end } = monthRange(ym);
+  const prevFrom = monthRange(shiftMonth(ym, -3)).start;
+  const prevTo = monthRange(shiftMonth(ym, -1)).end;
+  const ids = [user.id];
+  const [cur, catsNow, catsPrev, nature] = await Promise.all([
+    getPeriodTotals(q, ids, start, t),
+    byCategory(q, ids, start, t, "expense"),
+    byCategory(q, ids, prevFrom, prevTo, "expense"),
+    q.query<{ nature: string; cents: number }>(
+      `SELECT nature, sum(amount_cents)::bigint AS cents FROM transactions
+        WHERE deleted_at IS NULL AND user_id = $1 AND kind='expense' AND date BETWEEN $2 AND $3 GROUP BY nature`,
+      [user.id, start, t],
+    ),
+  ]);
+  const { rows: prevMonths } = await q.query<{ n: number; exp: number }>(
+    `SELECT count(DISTINCT to_char(date,'YYYY-MM'))::int AS n, COALESCE(sum(amount_cents),0)::bigint AS exp
+       FROM transactions WHERE deleted_at IS NULL AND user_id = $1 AND kind='expense' AND date BETWEEN $2 AND $3`,
+    [user.id, prevFrom, prevTo],
+  );
+  const monthsOfHistory = prevMonths[0].n;
+  const avgMonthlyExpense = monthsOfHistory ? Math.round(prevMonths[0].exp / monthsOfHistory) : null;
+  const day = Number(t.slice(8, 10));
+  const daysInMonth = Number(end.slice(8, 10));
+  const projected = day > 0 ? Math.round((cur.expenseCents / day) * daysInMonth) : cur.expenseCents;
+  const increases = catsNow
+    .map((c) => {
+      const before = catsPrev.find((p) => p.name === c.name)?.cents ?? 0;
+      const avg = monthsOfHistory ? Math.round(before / monthsOfHistory) : 0;
+      return { name: c.name, currentCents: c.cents, avgCents: avg, deltaCents: c.cents - avg };
+    })
+    .filter((c) => c.avgCents > 0 && c.deltaCents > 0)
+    .sort((a, b) => b.deltaCents - a.deltaCents);
+  const fixed = nature.rows.find((r) => r.nature === "fixed")?.cents ?? 0;
+  return {
+    month: ym,
+    monthsOfHistory,
+    expenseSoFarCents: cur.expenseCents,
+    incomeSoFarCents: cur.incomeCents,
+    projectedExpenseCents: projected,
+    avgMonthlyExpenseCents: avgMonthlyExpense,
+    topCategory: catsNow[0] ? { name: catsNow[0].name, cents: catsNow[0].cents, percent: catsNow[0].percent } : null,
+    biggestIncrease: increases[0] ?? null,
+    fixedSharePercent: cur.expenseCents ? Math.round((fixed / cur.expenseCents) * 1000) / 10 : null,
+    savingsRatePercent: cur.incomeCents ? Math.round(((cur.incomeCents - cur.expenseCents) / cur.incomeCents) * 1000) / 10 : null,
+  };
 }

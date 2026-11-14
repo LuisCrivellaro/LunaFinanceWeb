@@ -283,4 +283,49 @@ ALTER TABLE telegram_updates DROP COLUMN IF EXISTS status;
 ALTER TABLE transactions DROP COLUMN IF EXISTS payment_method;
 `,
   },
+  {
+    id: 3,
+    name: "transfers_and_bot_context",
+    // Somente adições. Transferências entre contas da MESMA pessoa: mexem no saldo
+    // de cada conta, mas não contam como receita nem despesa.
+    sql: /* sql */ `
+CREATE TABLE transfers (
+  id               SERIAL PRIMARY KEY,
+  user_id          INT NOT NULL REFERENCES users(id),
+  from_account_id  INT NOT NULL REFERENCES accounts(id),
+  to_account_id    INT NOT NULL REFERENCES accounts(id),
+  amount_cents     BIGINT NOT NULL CHECK (amount_cents > 0),
+  date             DATE NOT NULL,
+  description      TEXT,
+  source           TEXT NOT NULL DEFAULT 'web' CHECK (source IN ('web','telegram')),
+  created_by       INT NOT NULL REFERENCES users(id),
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at       TIMESTAMPTZ,
+  CHECK (from_account_id <> to_account_id)
+);
+CREATE INDEX transfers_user_idx ON transfers (user_id, date) WHERE deleted_at IS NULL;
+CREATE INDEX transfers_from_idx ON transfers (from_account_id) WHERE deleted_at IS NULL;
+CREATE INDEX transfers_to_idx ON transfers (to_account_id) WHERE deleted_at IS NULL;
+
+-- novos tipos de rascunho do bot (transferência, edição e exclusão)
+ALTER TABLE telegram_pending_actions DROP CONSTRAINT telegram_pending_actions_kind_check;
+ALTER TABLE telegram_pending_actions ADD CONSTRAINT telegram_pending_actions_kind_check
+  CHECK (kind IN ('transaction','goal','contribution','transfer','tx_update','tx_delete'));
+
+-- contexto da última consulta (permite "e no mês passado?")
+CREATE TABLE telegram_context (
+  user_id     INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  last_query  JSONB NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+`,
+    down: /* sql */ `
+DROP TABLE IF EXISTS telegram_context;
+DELETE FROM telegram_pending_actions WHERE kind IN ('transfer','tx_update','tx_delete');
+ALTER TABLE telegram_pending_actions DROP CONSTRAINT telegram_pending_actions_kind_check;
+ALTER TABLE telegram_pending_actions ADD CONSTRAINT telegram_pending_actions_kind_check
+  CHECK (kind IN ('transaction','goal','contribution'));
+DROP TABLE IF EXISTS transfers;
+`,
+  },
 ];

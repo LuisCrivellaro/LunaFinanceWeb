@@ -17,7 +17,9 @@ export type ConvState =
   | { step: "goal_name" }
   | { step: "goal_amount"; name: string }
   | { step: "goal_deadline"; name: string; targetCents: number }
-  | { step: "contrib_amount"; goalId: number; goalName: string; withdraw: boolean };
+  | { step: "contrib_amount"; goalId: number; goalName: string; withdraw: boolean }
+  | { step: "edit_tx"; txId: number; field: "amount" | "description" | "date" }
+  | { step: "transfer_amount"; fromAccountId: number | null; toAccountId: number | null; date: string };
 
 const CONV_TTL_MIN = 10;
 
@@ -49,7 +51,7 @@ export async function clearConversation(q: Queryable, userId: number) {
 
 // ------------------------------ ações pendentes ------------------------------
 
-export type PendingKind = "transaction" | "goal" | "contribution";
+export type PendingKind = "transaction" | "goal" | "contribution" | "transfer" | "tx_update" | "tx_delete";
 
 export interface GoalPayload {
   name: string;
@@ -63,10 +65,36 @@ export interface ContributionPayload {
   amountCents: number; // negativo = retirada
 }
 
+export interface TransferPayload {
+  amountCents: number;
+  fromAccountId: number | null;
+  toAccountId: number | null;
+  date: string;
+}
+/** Alteração de um lançamento JÁ registrado (mostra antes → depois). */
+export interface TxUpdatePayload {
+  txId: number;
+  description: string;
+  field: "amount" | "description" | "date" | "category";
+  fromLabel: string;
+  toLabel: string;
+  patch: Record<string, unknown>;
+}
+export interface TxDeletePayload {
+  txId: number;
+  description: string;
+  amountCents: number;
+  date: string;
+  kind: "income" | "expense";
+}
+
 export type PendingPayload =
   | { kind: "transaction"; draft: Draft; messageId?: number }
   | { kind: "goal"; goal: GoalPayload; messageId?: number }
-  | { kind: "contribution"; contribution: ContributionPayload; messageId?: number };
+  | { kind: "contribution"; contribution: ContributionPayload; messageId?: number }
+  | { kind: "transfer"; transfer: TransferPayload; messageId?: number }
+  | { kind: "tx_update"; update: TxUpdatePayload; messageId?: number }
+  | { kind: "tx_delete"; del: TxDeletePayload; messageId?: number };
 
 export interface Pending {
   id: string;
@@ -174,4 +202,24 @@ export async function confirmPending<T>(
     await q.query("UPDATE telegram_pending_actions SET result_id = $2 WHERE id = $1", [id, out.resultId]);
     return { ok: true as const, value: out.value };
   });
+}
+
+// ------------------------------ contexto da conversa ------------------------------
+// Guarda a última consulta para entender continuações como "e no mês passado?".
+
+const CONTEXT_TTL_MIN = 15;
+
+export async function saveLastQuery(q: Queryable, userId: number, query: unknown) {
+  await q.query(
+    `INSERT INTO telegram_context (user_id, last_query, updated_at) VALUES ($1,$2,now())
+     ON CONFLICT (user_id) DO UPDATE SET last_query = EXCLUDED.last_query, updated_at = now()`,
+    [userId, JSON.stringify(query)],
+  );
+}
+
+export async function getLastQuery<T>(q: Queryable, userId: number): Promise<T | null> {
+  const { rows } = await q.query<{ last_query: T | string; updated_at: Date }>("SELECT last_query, updated_at FROM telegram_context WHERE user_id = $1", [userId]);
+  const r = rows[0];
+  if (!r || now().getTime() - new Date(r.updated_at).getTime() > CONTEXT_TTL_MIN * 60000) return null;
+  return typeof r.last_query === "string" ? (JSON.parse(r.last_query) as T) : r.last_query;
 }
