@@ -160,7 +160,8 @@ Vencimentos (1–7 dias antes, com botão “Marcar como paga”), contas atrasa
 - **Autorização**: cada mensagem resolve o usuário pelo Telegram ID vinculado; botões de rascunhos de outra pessoa são recusados; regras de família iguais às do site.
 - **Idempotência**: `telegram_updates` registra cada `update_id` (status e tentativas). Repetições são ignoradas.
 - **Confirmação atômica**: trava do rascunho (status + versão + validade) e gravação acontecem na mesma transação do banco. Clique duplo, cartão antigo ou confirmação expirada não gravam. Se o banco falhar, nada é salvo e o rascunho continua disponível.
-- **Falhas**: erro transitório (banco, rede, Telegram) → resposta 500 para o Telegram reenviar, até 3 tentativas; depois disso o bot avisa que **não** concluiu. Mensagens de sucesso só são enviadas depois do commit.
+- **Falhas**: erro transitório (banco, rede, Telegram 5xx/429) → resposta 500 para o Telegram reenviar, até 3 tentativas; depois disso o bot avisa que **não** concluiu. Erro permanente do Telegram (400/403, ex.: bot bloqueado) não é repetido. Mensagens de sucesso só são enviadas depois do commit.
+- **Limites da Bot API**: texto acima de 4096 caracteres ou HTML rejeitado (`can't parse entities`) é reenviado como texto simples; mensagem que não pode mais ser editada vira mensagem nova com os mesmos botões; `callback_data` fica abaixo de 64 bytes (IDs inteiros + rascunho de 12 caracteres). Aviso para quem bloqueou o bot não é retentado a cada rodada.
 - **Limites**: `TELEGRAM_USER_RATE_PER_MIN` mensagens/botões por pessoa por minuto (padrão 30) e teto de chamadas de IA por hora. Em memória — com várias instâncias, vale por instância.
 - **Resiliência**: Postgres com timeout de conexão e de consulta; Bot API com até 3 tentativas e backoff exponencial (e respeito ao `retry_after` do 429); exceções não tratadas são registradas — rejeições seguem, exceções reiniciam o processo de forma controlada (operações financeiras são atômicas, nada fica pela metade).
 - **Logs** estruturados em JSON com `op` (`tg-<update_id>`), usuário e duração — sem texto das mensagens, valores ou tokens.
@@ -238,7 +239,7 @@ Entre no site como um perfil de demonstração, gere o código em Configuraçõe
 
 Testes automatizados (não usam a rede nem dados reais):
 ```bash
-npm test                          # 140+ testes, incluindo os 18 cenários do bot
+npm test                          # 190+ testes, incluindo os 18 cenários do bot
 npx vitest run server/test/telegram.test.ts
 ```
 

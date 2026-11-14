@@ -88,35 +88,48 @@ export function createTelegramApi(token: string, fetchImpl: typeof fetch = fetch
       }
     }
   }
+  /** Envia como HTML; se o texto não couber ou o HTML for rejeitado, reenvia como texto simples. */
+  async function withPlainFallback<T>(method: string, base: Record<string, unknown>, text: string): Promise<T> {
+    if (text.length <= MAX_MESSAGE_CHARS) {
+      try {
+        return await call<T>(method, { ...base, text, parse_mode: "HTML" });
+      } catch (err) {
+        if (!(err instanceof TelegramError) || !/can't parse entities|message is too long/i.test(err.description)) throw err;
+      }
+    }
+    return call<T>(method, { ...base, text: plainText(text) });
+  }
+  async function sendMessage(chatId: number, text: string, opts: SendOptions = {}) {
+    return withPlainFallback<{ message_id: number }>("sendMessage", {
+      chat_id: chatId,
+      disable_web_page_preview: opts.disable_web_page_preview ?? true,
+      ...(opts.reply_markup ? { reply_markup: opts.reply_markup } : {}),
+    }, text);
+  }
   return {
     call,
-    async sendMessage(chatId, text, opts = {}) {
-      return call<{ message_id: number }>("sendMessage", {
-        chat_id: chatId,
-        text,
-        parse_mode: "HTML",
-        disable_web_page_preview: opts.disable_web_page_preview ?? true,
-        ...(opts.reply_markup ? { reply_markup: opts.reply_markup } : {}),
-      });
-    },
+    sendMessage,
     async editMessageText(chatId, messageId, text, opts = {}) {
       try {
-        await call("editMessageText", {
+        await withPlainFallback("editMessageText", {
           chat_id: chatId,
           message_id: messageId,
-          text,
-          parse_mode: "HTML",
           disable_web_page_preview: true,
           ...(opts.reply_markup ? { reply_markup: opts.reply_markup } : {}),
-        });
+        }, text);
       } catch (err) {
         if (err instanceof TelegramError && /message is not modified/i.test(err.description)) return;
+        // mensagem apagada pela pessoa ou que não pode mais ser editada: manda uma nova
+        if (err instanceof TelegramError && /message to edit not found|message can't be edited/i.test(err.description)) {
+          await sendMessage(chatId, text, opts);
+          return;
+        }
         throw err;
       }
     },
     async answerCallbackQuery(id, text) {
       try {
-        await call("answerCallbackQuery", { callback_query_id: id, ...(text ? { text } : {}) });
+        await call("answerCallbackQuery", { callback_query_id: id, ...(text ? { text: text.slice(0, 200) } : {}) });
       } catch (err) {
         // callback antigo (>15 min) não pode mais ser respondido — não é erro do usuário
         if (err instanceof TelegramError && /query is too old|query ID is invalid/i.test(err.description)) return;
@@ -124,6 +137,25 @@ export function createTelegramApi(token: string, fetchImpl: typeof fetch = fetch
       }
     },
   };
+}
+
+/** Limite do Telegram para o texto de uma mensagem. */
+export const MAX_MESSAGE_CHARS = 4096;
+
+/** Converte o HTML do bot em texto simples (sem tags, entidades decodificadas) que cabe numa mensagem. */
+export function plainText(html: string): string {
+  const s = html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&");
+  return s.length <= MAX_MESSAGE_CHARS ? s : s.slice(0, MAX_MESSAGE_CHARS - 1) + "…";
+}
+
+/** Erros que não adianta repetir: chat inexistente, bot bloqueado, requisição inválida. */
+export function isPermanentTelegramError(err: unknown): err is TelegramError {
+  return err instanceof TelegramError && !err.transient && err.errorCode !== undefined && err.errorCode >= 400 && err.errorCode < 500;
 }
 
 /** Comandos exibidos no menu do Telegram (setMyCommands). */

@@ -9,7 +9,7 @@ import { addDays, currentMonth, localHour, localWeekday, monthNamePt, monthRange
 import { generateAllRecurrences } from "../services/transactions.js";
 import { monthTotals } from "../services/insights.js";
 import { brl, dt, esc, signed } from "../telegram/format.js";
-import type { InlineButton } from "../telegram/api.js";
+import { isPermanentTelegramError, type InlineButton } from "../telegram/api.js";
 
 interface LinkedUser {
   id: number;
@@ -44,8 +44,9 @@ async function notifyOnce(ctx: AppContext, u: LinkedUser, kind: string, ref: str
     await ctx.telegram!.sendMessage(u.chat_id, text, buttons ? { reply_markup: { inline_keyboard: buttons } } : {});
     return true;
   } catch (err) {
-    await ctx.db.query("DELETE FROM notification_log WHERE id = $1", [r.rows[0].id]);
-    ctx.log.warn("notificacao.falhou", { user_id: u.id, kind, err: (err as Error).message });
+    // falha transitória: libera para tentar no próximo ciclo; bot bloqueado/chat inexistente: não insiste
+    if (!isPermanentTelegramError(err)) await ctx.db.query("DELETE FROM notification_log WHERE id = $1", [r.rows[0].id]);
+    ctx.log.warn("notificacao.falhou", { user_id: u.id, kind, permanent: isPermanentTelegramError(err), err: (err as Error).message });
     return false;
   }
 }
@@ -78,8 +79,10 @@ export async function notifyDueBills(ctx: AppContext, users: LinkedUser[]) {
       await ctx.telegram!.sendMessage(u.chat_id, text, { reply_markup: { inline_keyboard: buttons } });
       sent++;
     } catch (err) {
-      for (const r of reserved) await ctx.db.query("DELETE FROM notification_log WHERE user_id = $1 AND kind='due' AND ref_key = $2", [u.id, `${r.id}:${r.date}`]);
-      ctx.log.warn("notificacao.falhou", { user_id: u.id, kind: "due", err: (err as Error).message });
+      if (!isPermanentTelegramError(err)) {
+        for (const r of reserved) await ctx.db.query("DELETE FROM notification_log WHERE user_id = $1 AND kind='due' AND ref_key = $2", [u.id, `${r.id}:${r.date}`]);
+      }
+      ctx.log.warn("notificacao.falhou", { user_id: u.id, kind: "due", permanent: isPermanentTelegramError(err), err: (err as Error).message });
     }
   }
   return sent;

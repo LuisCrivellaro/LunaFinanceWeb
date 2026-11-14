@@ -5,6 +5,7 @@
  *  - PGlite (`pglite://memory` ou `pglite://caminho`) — Postgres em WASM,
  *    para desenvolvimento local e testes sem instalar nada.
  */
+import { mkdirSync } from "node:fs";
 import pg from "pg";
 
 export interface QueryResult<T> {
@@ -90,7 +91,10 @@ async function createPglite(url: string): Promise<Db> {
     [NUMERIC]: (v: string) => Number(v),
     [DATE]: (v: string) => v,
   };
-  const db = path === "memory" || path === "" ? new PGlite({ parsers }) : new PGlite(path, { parsers });
+  const inMemory = path === "memory" || path === "";
+  // clone novo não tem .data/: o PGlite não cria a pasta sozinho
+  if (!inMemory) mkdirSync(path, { recursive: true });
+  const db = inMemory ? new PGlite({ parsers }) : new PGlite(path, { parsers });
   await db.waitReady;
   // PGlite é single-connection: serializamos transações para não intercalar.
   let chain: Promise<unknown> = Promise.resolve();

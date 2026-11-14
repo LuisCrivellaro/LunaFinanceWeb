@@ -20,7 +20,7 @@ import {
 } from "../services/transactions.js";
 import { createTransferWith } from "../services/transfers.js";
 import type { InlineButton } from "./api.js";
-import { TelegramError } from "./api.js";
+import { isPermanentTelegramError, TelegramError } from "./api.js";
 import { findPossibleDuplicate } from "./data.js";
 import { brl, dtFull, esc } from "./format.js";
 import { consumeLinkCode, unlinkTelegram, userByTelegramId } from "./linking.js";
@@ -95,9 +95,13 @@ export async function handleUpdate(ctx: AppContext, update: TgUpdate): Promise<v
     ctx.log.info("telegram.update_ok", { op, ms: Date.now() - started });
   } catch (err) {
     const msg = (err as Error).message;
-    ctx.log.error("telegram.update_erro", { op, attempt, err: msg.slice(0, 200) });
-    await ctx.db.query("UPDATE telegram_updates SET status = 'failed' WHERE update_id = $1", [update.update_id]).catch(() => {});
-    if (attempt < MAX_ATTEMPTS) throw new RetryableError(msg);
+    // erro permanente do Telegram (bot bloqueado, chat inexistente, requisição inválida): repetir não resolve
+    const permanent = isPermanentTelegramError(err);
+    ctx.log.error("telegram.update_erro", { op, attempt, permanent, err: msg.slice(0, 200) });
+    await ctx.db
+      .query("UPDATE telegram_updates SET status = 'failed', attempts = $2 WHERE update_id = $1", [update.update_id, permanent ? MAX_ATTEMPTS : attempt])
+      .catch(() => {});
+    if (attempt < MAX_ATTEMPTS && !permanent) throw new RetryableError(msg);
     // última tentativa: avisa o usuário sem afirmar que algo foi concluído
     const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id;
     if (chatId && update.message?.chat.type !== "group" && update.message?.chat.type !== "supergroup") {

@@ -606,6 +606,60 @@ describe("14 · falha da API do Telegram", () => {
   });
 });
 
+describe("14b · limites reais da Bot API", () => {
+  type Call = { method: string; body: Record<string, unknown> };
+  function recorder(respond: (c: Call, n: number) => Response) {
+    const calls: Call[] = [];
+    const f = (async (url: string, init: { body: string }) => {
+      const c = { method: String(url).split("/").pop()!, body: JSON.parse(init.body) };
+      calls.push(c);
+      return respond(c, calls.length);
+    }) as unknown as typeof fetch;
+    return { calls, api: createTelegramApi("1:X", f) };
+  }
+  const ok = (result: unknown = { message_id: 7 }) => new Response(JSON.stringify({ ok: true, result }));
+  const bad = (description: string, code = 400) => new Response(JSON.stringify({ ok: false, error_code: code, description }), { status: code });
+
+  it("HTML rejeitado pelo Telegram é reenviado como texto simples (sem tags, entidades decodificadas)", async () => {
+    const { calls, api } = recorder((_c, n) => (n === 1 ? bad("Bad Request: can't parse entities: Unsupported start tag") : ok()));
+    expect(await api.sendMessage(1, "<b>Saldo</b> &lt;R$ 10&gt; &amp; <x")).toEqual({ message_id: 7 });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].body.parse_mode).toBe("HTML");
+    expect(calls[1].body.parse_mode).toBeUndefined();
+    expect(calls[1].body.text).toBe("Saldo <R$ 10> & <x");
+  });
+
+  it("texto acima de 4096 caracteres vai cortado e sem HTML, numa única chamada", async () => {
+    const { calls, api } = recorder(() => ok());
+    await api.sendMessage(1, "<b>" + "a".repeat(5000) + "</b>");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.parse_mode).toBeUndefined();
+    expect((calls[0].body.text as string).length).toBeLessThanOrEqual(4096);
+    expect(calls[0].body.text as string).toMatch(/^a+…$/);
+  });
+
+  it("mensagem que não pode mais ser editada vira uma mensagem nova com os mesmos botões", async () => {
+    const kb = { inline_keyboard: [[{ text: "Menu", callback_data: "menu" }]] };
+    const { calls, api } = recorder((_c, n) => (n === 1 ? bad("Bad Request: message can't be edited") : ok()));
+    await api.editMessageText(1, 99, "Oi", { reply_markup: kb });
+    expect(calls.map((c) => c.method)).toEqual(["editMessageText", "sendMessage"]);
+    expect(calls[1].body.reply_markup).toEqual(kb);
+  });
+
+  it("erro permanente (bot bloqueado) não pede reenvio ao Telegram nem reprocessa o update", async () => {
+    t.tg.failNext("sendMessage", new TelegramError("sendMessage", 403, "Forbidden: bot was blocked by the user"));
+    const fixed = updateId++;
+    const r1 = await send({ update_id: fixed, ...msg(TG.joao, "/saldo") });
+    expect(r1.status).toBe(200);
+    t.tg.clear();
+    const r2 = await send({ update_id: fixed, ...msg(TG.joao, "/saldo") });
+    expect(r2.status).toBe(200);
+    expect(t.tg.sent.filter((s) => /Saldo/i.test(s.text ?? ""))).toHaveLength(0);
+    const { rows } = await t.db.query<{ attempts: number }>("SELECT attempts FROM telegram_updates WHERE update_id = $1", [fixed]);
+    expect(rows[0].attempts).toBe(3);
+  });
+});
+
 describe("15 · mensagens inválidas", () => {
   it("sem texto, longa demais, comando desconhecido, frase sem sentido, grupo, outro bot", async () => {
     await send(msg(TG.joao, undefined));
@@ -698,6 +752,23 @@ describe("configurações e notificações", () => {
   it("endpoint de cron exige segredo", async () => {
     expect((await request(t.app).post("/api/cron/run")).status).toBe(401);
     expect((await request(t.app).post("/api/cron/run").set("authorization", `Bearer ${t.ctx.config.cronSecret}`)).status).toBe(200);
+  });
+
+  it("aviso para quem bloqueou o bot não é repetido a cada rodada; falha de rede é", async () => {
+    const lu = await t.as("luciana");
+    await lu.post("/api/transactions").send({ kind: "expense", amountCents: 3100, description: "Internet bloqueio", date: "2026-11-16", status: "pending" });
+    t.tg.clear();
+    t.tg.failNext("sendMessage", new TelegramError("sendMessage", 403, "Forbidden: bot was blocked by the user"));
+    await runScheduledJobs(t.ctx);
+    await runScheduledJobs(t.ctx);
+    expect(t.tg.sent.filter((s) => s.text?.includes("Internet bloqueio"))).toHaveLength(0);
+
+    await lu.post("/api/transactions").send({ kind: "expense", amountCents: 3200, description: "Internet rede", date: "2026-11-16", status: "pending" });
+    t.tg.clear();
+    t.tg.failNext("sendMessage", new TelegramError("sendMessage", undefined, "falha de rede", { transient: true }));
+    await runScheduledJobs(t.ctx);
+    await runScheduledJobs(t.ctx);
+    expect(t.tg.sent.filter((s) => s.text?.includes("Internet rede"))).toHaveLength(1);
   });
 
   it("desvincular pelo bot pede confirmação e corta o acesso", async () => {
