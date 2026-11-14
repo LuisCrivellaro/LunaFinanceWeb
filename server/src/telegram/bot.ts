@@ -27,12 +27,12 @@ import { consumeLinkCode, unlinkTelegram, userByTelegramId } from "./linking.js"
 import { followUp, interpret, monthPeriod, parseAmountReply, type Intent, type NluContext, type Query } from "./nlu.js";
 import { aiLimiter, messageLimiter } from "./throttle.js";
 import type { Draft } from "./parser.js";
-import { parseDateText } from "./parser.js";
+import { matchCategory, normalize, parseDateText } from "./parser.js";
 import { buildReply, dateLabel, REPORT_MENU, reportQuery } from "./replies.js";
 import {
   cancelAllPending, cancelPending, clearConversation, confirmPending, createPending, getConversation, getLastQuery, getPending, pendingProblem,
   saveLastQuery, setConversation, setPendingMessage, updatePending, type ConvState, type Pending, type PendingPayload,
-  type TransferPayload, type TxDeletePayload, type TxUpdatePayload,
+  type TransferPayload, type TxDeletePayload, type TxUpdatePayload, type WizardFlow,
 } from "./state.js";
 
 // ----- Tipos mínimos da Bot API -----
@@ -165,6 +165,8 @@ async function runCommand(ctx: AppContext, user: User, cmd: string) {
   switch (cmd) {
     case "start":
       return sendWelcome(ctx, user);
+    case "menu":
+      return sendMenu(ctx, user);
     case "ajuda":
     case "help":
       return sendHelp(ctx, user);
@@ -229,11 +231,13 @@ async function doLink(ctx: AppContext, msg: TgMessage, code: string) {
   );
 }
 
-const QUICK_MENU: InlineButton[][] = [
-  [{ text: "📋 Resumo do mês", callback_data: "q:summary" }, { text: "💼 Saldo", callback_data: "q:balance" }],
-  [{ text: "🧮 Quanto posso gastar", callback_data: "q:spendable" }, { text: "🎯 Metas", callback_data: "q:goals" }],
-  [{ text: "💸 Últimas despesas", callback_data: "q:last_expense" }, { text: "❓ Ajuda", callback_data: "q:help" }],
+/** Menu principal (Inline Keyboard). Callbacks: w:<fluxo>, q:<consulta>, cfg. */
+export const MAIN_MENU: InlineButton[][] = [
+  [{ text: "💸 Gastei", callback_data: "w:expense" }, { text: "💰 Recebi", callback_data: "w:income" }],
+  [{ text: "📈 Economizei", callback_data: "w:save" }, { text: "📊 Meu resumo", callback_data: "q:summary" }],
+  [{ text: "🎯 Minhas metas", callback_data: "q:goals" }, { text: "⚙️ Configurações", callback_data: "cfg" }],
 ];
+const MENU_BUTTON: InlineButton = { text: "🏠 Menu principal", callback_data: "menu" };
 
 function quickQuery(key: string): Query | null {
   switch (key) {
@@ -256,11 +260,114 @@ async function sendWelcome(ctx: AppContext, user: User) {
   await ctx.telegram!.sendMessage(
     user.chatId,
     `Oi, ${esc(user.name.split(" ")[0])}! 🌙 Sou o assistente do <b>Luna Finance</b>.\n\n` +
-      "Pode falar comigo normalmente, sem comandos:\n" +
-      "• <i>Gastei 45 reais no almoço</i>\n• <i>Quanto gastei essa semana?</i>\n• <i>Quanto posso gastar até o fim do mês?</i>\n\n" +
+      "Escolha uma opção abaixo — ou, se preferir, escreva normalmente, como <i>gastei 45 no almoço</i> ou <i>quanto gastei essa semana?</i>\n\n" +
       "Eu sempre mostro um resumo e só registro depois que você confirmar.",
-    { reply_markup: { inline_keyboard: QUICK_MENU } },
+    { reply_markup: { inline_keyboard: MAIN_MENU } },
   );
+}
+
+async function sendMenu(ctx: AppContext, user: User, messageId?: number) {
+  const text = "🏠 <b>Menu principal</b>\nO que você quer fazer?";
+  if (messageId) {
+    try {
+      await ctx.telegram!.editMessageText(user.chatId, messageId, text, { reply_markup: { inline_keyboard: MAIN_MENU } });
+      return;
+    } catch {
+      /* mensagem antiga demais para editar: envia uma nova */
+    }
+  }
+  await ctx.telegram!.sendMessage(user.chatId, text, { reply_markup: { inline_keyboard: MAIN_MENU } });
+}
+
+// =========================== assistente do menu (Gastei / Recebi / Economizei) ===========================
+
+const WIZ_TITLE = { expense: "💸 <b>Gastei</b>", income: "💰 <b>Recebi</b>", save: "📈 <b>Economizei</b>" } as const;
+
+async function startWizard(ctx: AppContext, user: User, flow: WizardFlow) {
+  await cancelAllPending(ctx.db, user.id); // rascunhos antigos não competem com o novo fluxo
+  await setConversation(ctx.db, user.id, { step: "wiz", flow, stage: "amount" });
+  const hint = flow === "save" ? "Quanto você guardou? (ex.: 200)" : flow === "income" ? "Qual o valor recebido? (ex.: 2.500)" : "Qual foi o valor? (ex.: 45,90)";
+  await ctx.telegram!.sendMessage(user.chatId, `${WIZ_TITLE[flow]}\n\n${hint}`, { reply_markup: { inline_keyboard: [[MENU_BUTTON]] } });
+}
+
+/** Total já separado: contribuições da pessoa em metas + saldo das contas de reserva (poupança/investimento). */
+async function savingsTotal(ctx: AppContext, user: AuthUser) {
+  const { rows } = await ctx.db.query<{ v: number }>("SELECT COALESCE(sum(amount_cents),0)::bigint AS v FROM goal_contributions WHERE user_id = $1", [user.id]);
+  const reserves = (await listAccounts(ctx.db, user, [user.id])).filter((a) => a.type === "savings" || a.type === "investment");
+  return { goalsCents: rows[0].v, reservesCents: reserves.reduce((s2, a) => s2 + a.balanceCents, 0) };
+}
+
+async function wizardAmount(ctx: AppContext, user: User, state: Extract<ConvState, { step: "wiz" }>, cents: number) {
+  const tg = ctx.telegram!;
+  if (state.flow === "save") {
+    const goals = (await listGoals(ctx.db, user, {})).filter((g) => !g.archived && !g.achievedAt && (g.scope === "family" ? user.family_access !== "none" : g.ownerId === user.id));
+    const reserves = (await listAccounts(ctx.db, user, [user.id])).filter((a) => !a.isDefault);
+    if (!goals.length && !reserves.length) {
+      await clearConversation(ctx.db, user.id);
+      await tg.sendMessage(
+        user.chatId,
+        "Para registrar uma economia, ela precisa ir para uma <b>meta</b> ou para uma <b>conta de reserva</b> (ex.: poupança).\n" +
+          "Assim o valor não é contado como receita — ele já está no seu saldo, só fica separado.\n\nCrie uma meta agora:",
+        { reply_markup: { inline_keyboard: [[{ text: "➕ Criar meta", callback_data: "gn" }], [MENU_BUTTON]] } },
+      );
+      return;
+    }
+    await setConversation(ctx.db, user.id, { ...state, stage: "destination", amountCents: cents });
+    const rows: InlineButton[][] = [
+      ...goals.slice(0, 6).map((g) => [{ text: `🎯 ${g.name.slice(0, 34)}`, callback_data: `ws:g${g.id}` }]),
+      ...reserves.slice(0, 4).map((a) => [{ text: `🏦 ${a.name.slice(0, 34)}`, callback_data: `ws:a${a.id}` }]),
+      [MENU_BUTTON],
+    ];
+    await tg.sendMessage(user.chatId, `${WIZ_TITLE.save} · ${brl(cents)}\n\nOnde você guardou esse dinheiro?`, { reply_markup: { inline_keyboard: rows } });
+    return;
+  }
+  await setConversation(ctx.db, user.id, { ...state, stage: "category", amountCents: cents });
+  const cats = (await listCategories(ctx.db)).filter((c) => c.kind === state.flow);
+  const rows: InlineButton[][] = [];
+  for (let i = 0; i < cats.length; i += 2) rows.push(cats.slice(i, i + 2).map((c) => ({ text: c.name, callback_data: `wc:${c.id}` })));
+  rows.push([MENU_BUTTON]);
+  const question = state.flow === "income" ? "Qual a origem dessa receita? Toque numa opção ou escreva (ex.: <i>salário</i>, <i>freela</i>)." : "Em qual categoria?";
+  await tg.sendMessage(user.chatId, `${WIZ_TITLE[state.flow]} · ${brl(cents)}\n\n${question}`, { reply_markup: { inline_keyboard: rows } });
+}
+
+async function wizardCategory(ctx: AppContext, user: User, state: Extract<ConvState, { step: "wiz" }>, categoryId: number | null, typedOrigin?: string) {
+  if (state.flow === "income") {
+    // receita: valor + origem bastam — vai direto para a confirmação
+    await clearConversation(ctx.db, user.id);
+    const cats = await listCategories(ctx.db);
+    const cat = cats.find((c) => c.id === categoryId);
+    return proposeWizardEntry(ctx, user, "income", state.amountCents!, categoryId, typedOrigin?.trim() || cat?.name || "Receita");
+  }
+  await setConversation(ctx.db, user.id, { ...state, stage: "description", categoryId });
+  const cat = (await listCategories(ctx.db)).find((c) => c.id === categoryId);
+  await ctx.telegram!.sendMessage(user.chatId, `${WIZ_TITLE.expense} · ${brl(state.amountCents!)} · ${esc(cat?.name ?? "Sem categoria")}\n\nDescreva o gasto (ex.: <i>almoço com a equipe</i>):`, {
+    reply_markup: { inline_keyboard: [[{ text: `Usar “${cat?.name ?? "Despesa"}”`, callback_data: "wd:skip" }], [MENU_BUTTON]] },
+  });
+}
+
+async function proposeWizardEntry(ctx: AppContext, user: User, kind: "income" | "expense", cents: number, categoryId: number | null, description: string) {
+  const draft: Draft = {
+    kind, amountCents: cents, description: description.slice(0, 160), categoryId, date: today(), status: "paid",
+    installments: null, paymentMethod: null, accountId: null, amountText: String(cents),
+  };
+  await sendCard(ctx, user, { kind: "transaction", draft, flow: kind });
+}
+
+async function wizardDestination(ctx: AppContext, user: User, state: Extract<ConvState, { step: "wiz" }>, dest: string) {
+  const tg = ctx.telegram!;
+  const cents = state.amountCents!;
+  if (dest.startsWith("g")) {
+    const goal = (await listGoals(ctx.db, user, {})).find((g) => g.id === Number(dest.slice(1)) && (g.scope === "family" || g.ownerId === user.id));
+    if (!goal) return void (await tg.sendMessage(user.chatId, "Não encontrei essa meta entre as suas.", { reply_markup: { inline_keyboard: [[MENU_BUTTON]] } }));
+    await clearConversation(ctx.db, user.id);
+    return sendCard(ctx, user, { kind: "contribution", contribution: { goalId: goal.id, goalName: goal.name, amountCents: cents }, flow: "save" });
+  }
+  const accounts = await listAccounts(ctx.db, user, [user.id]);
+  const to = accounts.find((a) => a.id === Number(dest.slice(1)) && !a.isDefault);
+  const from = accounts.find((a) => a.isDefault) ?? null;
+  if (!to || !from) return void (await tg.sendMessage(user.chatId, "Essa conta não está disponível.", { reply_markup: { inline_keyboard: [[MENU_BUTTON]] } }));
+  await clearConversation(ctx.db, user.id);
+  return sendCard(ctx, user, { kind: "transfer", transfer: { amountCents: cents, fromAccountId: from.id, toAccountId: to.id, date: today() }, flow: "save" });
 }
 
 async function sendHelp(ctx: AppContext, user: User) {
@@ -316,6 +423,8 @@ async function handleFreeText(ctx: AppContext, user: User, text: string) {
   switch (intent.type) {
     case "greeting":
       return sendWelcome(ctx, user);
+    case "menu":
+      return sendMenu(ctx, user);
     case "thanks":
       await ctx.telegram!.sendMessage(user.chatId, "Por nada! 🌙 Se precisar, é só mandar mensagem.");
       return;
@@ -459,6 +568,43 @@ async function handleConversationReply(ctx: AppContext, user: User, state: ConvS
       }
       await clearConversation(ctx.db, user.id);
       await proposeGoal(ctx, user, { name: state.name, targetCents: state.targetCents, deadline, scope: "individual" });
+      return true;
+    }
+
+    case "wiz": {
+      if (state.stage === "amount") {
+        const cents = parseAmountReply(text);
+        if (!cents) {
+          // frase completa no meio do fluxo: respeita a linguagem natural
+          const nctx = await nluContext(ctx, user);
+          if (interpret(text, nctx).type !== "unknown") {
+            await clearConversation(ctx.db, user.id);
+            return false;
+          }
+          await tg.sendMessage(user.chatId, "Não entendi o valor. Envie só o número, por exemplo <b>45,90</b>.", { reply_markup: { inline_keyboard: [[MENU_BUTTON]] } });
+          return true;
+        }
+        await wizardAmount(ctx, user, state, cents);
+        return true;
+      }
+      if (state.stage === "description") {
+        const d = text.trim();
+        if (!d || d.length > 160) {
+          await tg.sendMessage(user.chatId, "A descrição precisa ter entre 1 e 160 caracteres.");
+          return true;
+        }
+        await clearConversation(ctx.db, user.id);
+        await proposeWizardEntry(ctx, user, "expense", state.amountCents!, state.categoryId ?? null, d.charAt(0).toUpperCase() + d.slice(1));
+        return true;
+      }
+      if (state.stage === "category" && state.flow === "income") {
+        // origem digitada: tenta casar com uma categoria de receita pelas palavras-chave
+        const nctx = await nluContext(ctx, user);
+        const cat = matchCategory(normalize(text), "income", nctx.categories) ?? nctx.categories.find((c) => c.kind === "income" && /^outr/i.test(c.name));
+        await wizardCategory(ctx, user, state, cat?.id ?? null, text.trim().slice(0, 80));
+        return true;
+      }
+      await tg.sendMessage(user.chatId, "Escolha uma das opções acima — ou toque em 🏠 Menu principal.", { reply_markup: { inline_keyboard: [[MENU_BUTTON]] } });
       return true;
     }
 
@@ -785,7 +931,28 @@ function editMenu(p: Pending): InlineButton[][] {
 
 // =========================== botões ===========================
 
+/**
+ * Todo clique recebe answerCallbackQuery — mesmo se algo falhar no meio —
+ * para o Telegram não ficar com o indicador de carregamento girando.
+ */
 async function onCallback(ctx: AppContext, cb: TgCallbackQuery, op: string) {
+  const real = ctx.telegram!;
+  let answered = false;
+  const tracked = {
+    ...real,
+    answerCallbackQuery: async (id: string, text?: string) => {
+      answered = true;
+      await real.answerCallbackQuery(id, text);
+    },
+  };
+  try {
+    await onCallbackInner({ ...ctx, telegram: tracked }, cb, op);
+  } finally {
+    if (!answered) await real.answerCallbackQuery(cb.id).catch(() => {});
+  }
+}
+
+async function onCallbackInner(ctx: AppContext, cb: TgCallbackQuery, op: string) {
   const tg = ctx.telegram!;
   const user = await userByTelegramId(ctx.db, cb.from.id);
   const chatId = cb.message?.chat.id;
@@ -825,6 +992,40 @@ async function onCallback(ctx: AppContext, cb: TgCallbackQuery, op: string) {
     await tg.answerCallbackQuery(cb.id);
     if (q) await answer(ctx, user, q);
     return;
+  }
+  if (action === "menu") {
+    await clearConversation(ctx.db, user.id);
+    await tg.answerCallbackQuery(cb.id);
+    return sendMenu(ctx, user, messageId);
+  }
+  if (action === "cfg") {
+    await tg.answerCallbackQuery(cb.id);
+    return sendSettings(ctx, user);
+  }
+  if (action === "w" && (id === "expense" || id === "income" || id === "save")) {
+    await tg.answerCallbackQuery(cb.id);
+    return startWizard(ctx, user, id);
+  }
+  if (action === "wc" || action === "wd" || action === "ws") {
+    // botões de etapa: só valem se o fluxo estiver exatamente nessa etapa (cliques repetidos/antigos não fazem nada)
+    const state = await getConversation(ctx.db, user.id);
+    const expected = action === "wc" ? "category" : action === "wd" ? "description" : "destination";
+    if (state?.step !== "wiz" || state.stage !== expected) {
+      await tg.answerCallbackQuery(cb.id, "Essa etapa já passou. Use o menu para começar de novo.");
+      return;
+    }
+    await tg.answerCallbackQuery(cb.id);
+    if (action === "wc") {
+      const cat = (await listCategories(ctx.db)).find((c) => c.id === Number(id) && c.kind === state.flow);
+      if (!cat) return;
+      return wizardCategory(ctx, user, state, cat.id);
+    }
+    if (action === "wd") {
+      await clearConversation(ctx.db, user.id);
+      const cat = (await listCategories(ctx.db)).find((c) => c.id === state.categoryId);
+      return proposeWizardEntry(ctx, user, "expense", state.amountCents!, state.categoryId ?? null, cat?.name ?? "Despesa");
+    }
+    return wizardDestination(ctx, user, state, id);
   }
   if (action === "q") {
     await tg.answerCallbackQuery(cb.id);
@@ -1069,12 +1270,21 @@ async function confirm(ctx: AppContext, user: User, cb: TgCallbackQuery, p: Pend
     return;
   }
   ctx.log.info("telegram.confirmado", { op, user_id: user.id, kind: p.kind });
-  // a gravação já foi confirmada pelo banco; agora sim avisamos
+  // a gravação já foi confirmada pelo banco; agora sim avisamos — com os próximos passos
+  const flow = "flow" in p.payload ? p.payload.flow : undefined;
+  let text = result.value;
+  if (flow === "save") {
+    const tot = await savingsTotal(ctx, user).catch(() => null);
+    if (tot) text += `\n\n📈 Total separado: ${brl(tot.goalsCents)} em metas + ${brl(tot.reservesCents)} em contas de reserva.\n<i>Economia não é receita: o dinheiro só mudou de lugar.</i>`;
+  }
+  const next: InlineButton[][] = flow
+    ? [[{ text: "➕ Registrar outra", callback_data: `w:${flow}` }, MENU_BUTTON]]
+    : [[{ text: "💸 Gastei", callback_data: "w:expense" }, { text: "💰 Recebi", callback_data: "w:income" }], [MENU_BUTTON]];
   try {
-    await tg.editMessageText(user.chatId, messageId, result.value);
+    await tg.editMessageText(user.chatId, messageId, text, { reply_markup: { inline_keyboard: next } });
   } catch (err) {
     ctx.log.warn("telegram.aviso_pos_confirmacao_falhou", { op, err: (err as Error).message.slice(0, 120) });
-    await tg.sendMessage(user.chatId, result.value).catch(() => {});
+    await tg.sendMessage(user.chatId, text, { reply_markup: { inline_keyboard: next } }).catch(() => {});
   }
   await tg.answerCallbackQuery(cb.id, "Registrado!").catch(() => {});
 }

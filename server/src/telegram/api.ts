@@ -128,6 +128,7 @@ export function createTelegramApi(token: string, fetchImpl: typeof fetch = fetch
 
 /** Comandos exibidos no menu do Telegram (setMyCommands). */
 export const BOT_COMMANDS = [
+  { command: "menu", description: "Menu principal com botões" },
   { command: "resumo", description: "Resumo do mês e relatórios" },
   { command: "saldo", description: "Saldo disponível" },
   { command: "despesas", description: "Últimas despesas" },

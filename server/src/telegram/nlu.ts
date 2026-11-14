@@ -51,6 +51,7 @@ export type Intent =
   | { type: "transfer"; amountCents: number | null; fromAccountId: number | null; toAccountId: number | null; date: string }
   | { type: "manage_last"; action: "edit" | "delete"; kind: "income" | "expense" | null }
   | { type: "greeting" }
+  | { type: "menu" }
   | { type: "thanks" }
   | { type: "unknown" };
 
@@ -258,6 +259,7 @@ export function interpret(text: string, ctx: NluContext): Intent {
   if (!n) return { type: "unknown" };
   // conversa social: responde sem IA (custo zero)
   if (/^(oi+|ola|opa|e ai|eai|hey|hello|bom dia|boa tarde|boa noite|tudo bem|tudo bom)[\s!?.,]*(luna|bot)?[\s!?.,]*$/.test(n)) return { type: "greeting" };
+  if (/^(menu|menu principal|inicio|voltar|opcoes)[\s!?.,]*$/.test(n)) return { type: "menu" };
   if (/^(obrigad[oa]|valeu|vlw|brigad[oa]|obg|show|perfeito|otimo|beleza|blz|ok|certo|top)[\s!?.,]*(luna|bot)?[\s!?.,]*$/.test(n)) return { type: "thanks" };
   const manage = detectManageLast(n);
   if (manage) return manage;

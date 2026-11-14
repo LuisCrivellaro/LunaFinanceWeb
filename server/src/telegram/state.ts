@@ -19,7 +19,11 @@ export type ConvState =
   | { step: "goal_deadline"; name: string; targetCents: number }
   | { step: "contrib_amount"; goalId: number; goalName: string; withdraw: boolean }
   | { step: "edit_tx"; txId: number; field: "amount" | "description" | "date" }
-  | { step: "transfer_amount"; fromAccountId: number | null; toAccountId: number | null; date: string };
+  | { step: "transfer_amount"; fromAccountId: number | null; toAccountId: number | null; date: string }
+  /** Assistente do menu (💸 Gastei / 💰 Recebi / 📈 Economizei), etapa por etapa. */
+  | { step: "wiz"; flow: WizardFlow; stage: "amount" | "category" | "description" | "destination"; amountCents?: number; categoryId?: number | null };
+
+export type WizardFlow = "expense" | "income" | "save";
 
 const CONV_TTL_MIN = 10;
 
@@ -89,10 +93,10 @@ export interface TxDeletePayload {
 }
 
 export type PendingPayload =
-  | { kind: "transaction"; draft: Draft; messageId?: number }
+  | { kind: "transaction"; draft: Draft; messageId?: number; flow?: WizardFlow }
   | { kind: "goal"; goal: GoalPayload; messageId?: number }
-  | { kind: "contribution"; contribution: ContributionPayload; messageId?: number }
-  | { kind: "transfer"; transfer: TransferPayload; messageId?: number }
+  | { kind: "contribution"; contribution: ContributionPayload; messageId?: number; flow?: WizardFlow }
+  | { kind: "transfer"; transfer: TransferPayload; messageId?: number; flow?: WizardFlow }
   | { kind: "tx_update"; update: TxUpdatePayload; messageId?: number }
   | { kind: "tx_delete"; del: TxDeletePayload; messageId?: number };
 

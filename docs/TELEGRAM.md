@@ -56,6 +56,33 @@ Telegram ──HTTPS──▶ POST /telegram/webhook
 <a id="o-que-o-bot-faz"></a>
 ## 2. O que o bot faz
 
+### Menu interativo (botões)
+“Oi”, “Olá”, “Bom dia”, “Boa tarde”, “Boa noite”, “menu”, `/start` ou `/menu` abrem:
+
+```
+[💸 Gastei]      [💰 Recebi]
+[📈 Economizei]  [📊 Meu resumo]
+[🎯 Minhas metas][⚙️ Configurações]
+```
+
+| Opção | Fluxo |
+|---|---|
+| 💸 Gastei | valor (digitado) → categoria (botões) → descrição (digitada ou “Usar nome da categoria”) → cartão Confirmar/Editar/Cancelar |
+| 💰 Recebi | valor → origem (botões de categoria de receita ou texto, ex.: *freela de design*) → cartão |
+| 📈 Economizei | valor → destino: uma **meta** (vira contribuição) ou uma **conta de reserva** (vira transferência da conta principal). **Nunca é receita**: o dinheiro já está no saldo, só muda de lugar — sem contagem duplicada. Sem meta/conta de reserva, o bot oferece criar uma meta. |
+| 📊 Meu resumo | resumo do mês com dados reais + menu de relatórios |
+| 🎯 Minhas metas | metas com progresso, “Ver” e “Guardar” |
+| ⚙️ Configurações | avisos automáticos e desconexão |
+
+Depois de confirmar: **➕ Registrar outra** (reabre o mesmo fluxo) e **🏠 Menu principal**. Todo passo tem 🏠 para voltar ao menu (encerra a etapa em andamento).
+
+Regras técnicas do menu:
+- Estado do fluxo fica no banco (`telegram_conversations`, expira em 10 min) — sobrevive a reinícios.
+- Botões de etapa (`wc`, `wd`, `ws`) só valem na etapa exata em que o fluxo está: cliques repetidos ou de mensagens antigas respondem “Essa etapa já passou”.
+- Destinos de economia e categorias são revalidados no servidor (metas e contas de outra pessoa são recusadas mesmo com callback forjado).
+- Todo clique recebe `answerCallbackQuery`, inclusive quando ocorre erro no processamento (não fica “carregando”).
+- Linguagem natural continua valendo no meio do fluxo: se, ao pedir o valor, a pessoa escrever *gastei 33 no cinema*, o bot entende a frase completa.
+
 ### Registrar (sempre com resumo + confirmação)
 | Mensagem | O bot entende |
 |---|---|
@@ -97,7 +124,8 @@ Períodos entendidos: hoje, ontem, *essa semana* (segunda até hoje), *semana pa
 ### Comandos
 | | |
 |---|---|
-| `/start` | boas-vindas com menu rápido (resumo, saldo, quanto posso gastar, metas…) e vinculação (`/start link_CÓDIGO`) |
+| `/start` | boas-vindas com o menu principal e vinculação (`/start link_CÓDIGO`) |
+| `/menu` | menu principal com botões (também “menu”, “oi”, “bom dia”…) |
 | `/ajuda` | o que o bot faz |
 | `/saldo` | saldo por conta + contas pendentes da semana |
 | `/resumo` | resumo do mês + menu: hoje, semana, mês, categorias, comparar, maiores despesas, receitas × despesas, evolução do saldo |

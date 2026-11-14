@@ -250,13 +250,13 @@ describe("consultas analíticas e linguagem natural", () => {
     expect(lastText()).toMatch(/Maiores despesas em novembro de 2026[\s\S]*Condomínio|Tênis/);
   });
 
-  it("saudação e agradecimento respondem sem IA; menu rápido funciona", async () => {
+  it("saudação e agradecimento respondem sem IA; menu principal funciona", async () => {
     let aiCalls = 0;
     t.ctx.ai = { async respond() { aiCalls++; return { type: "none", reason: "x" }; } };
     await send(msg(TG.luciana, "oi"));
     expect(lastText()).toMatch(/Sou o assistente do <b>Luna Finance/);
-    await send(cb(TG.luciana, button("Quanto posso gastar")));
-    expect(lastText()).toMatch(/Disponível/);
+    await send(cb(TG.luciana, button("Meu resumo")));
+    expect(lastText()).toMatch(/Resumo em novembro de 2026/);
     await send(msg(TG.luciana, "obrigado!"));
     expect(lastText()).toMatch(/Por nada/);
     expect(aiCalls).toBe(0);
