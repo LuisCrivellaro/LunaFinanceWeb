@@ -298,7 +298,14 @@ async function handleFreeText(ctx: AppContext, user: User, text: string) {
   const wantsExplanation = /\b(por que|porque|explique|explica|dica|tend[eê]ncia)\b/i.test(text);
   const needsAi = intent.type === "unknown" || wantsExplanation || (intent.type === "incomplete" && intent.missing.includes("kind"));
   if (ctx.ai && needsAi && text.trim().length >= 4 && aiLimiter.take(`ai${user.id}`)) {
-    const r = await ctx.ai.respond(text, { db: ctx.db, user, today: nctx.today, categories: nctx.categories, accounts: nctx.accounts, goals: nctx.goals });
+    let r: Awaited<ReturnType<NonNullable<AppContext["ai"]>["respond"]>>;
+    try {
+      r = await ctx.ai.respond(text, { db: ctx.db, user, today: nctx.today, categories: nctx.categories, accounts: nctx.accounts, goals: nctx.goals });
+    } catch (err) {
+      // provedor de IA fora do ar nunca derruba o bot: segue com as regras
+      ctx.log.warn("ia.indisponivel", { user_id: user.id, err: (err as Error).message.slice(0, 120) });
+      r = { type: "none", reason: "erro" };
+    }
     if (r.type === "text") {
       await ctx.telegram!.sendMessage(user.chatId, esc(r.text) + "\n\n<i>Resposta gerada com IA a partir dos seus dados.</i>");
       return;

@@ -60,8 +60,9 @@ export function reportQuery(key: string): Query | null {
   }
 }
 
+/** "em novembro de 2026", mas "hoje", "esta semana", "últimos 7 dias" sem preposição. */
 function periodTitle(p: Period) {
-  return p.label.startsWith("em ") || p.label === "hoje" || p.label === "ontem" || p.label.startsWith("últimos") || p.label.startsWith("semana") ? p.label : `em ${p.label}`;
+  return /^(em |hoje|ontem|últimos|semana|esta semana)/.test(p.label) ? p.label : `em ${p.label}`;
 }
 
 export function goalText(g: GoalDetail) {

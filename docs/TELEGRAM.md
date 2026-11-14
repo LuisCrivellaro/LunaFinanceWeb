@@ -68,12 +68,28 @@ Telegram ──HTTPS──▶ POST /telegram/webhook
 | *Conta de internet de 120 para dia 20* | conta a pagar, vencimento dia 20 |
 | *Comprei um celular de 2.400 em 12x* | 12 parcelas |
 | *paguei a farmácia* | pergunta só o valor |
-| *mesada 200* | pergunta se é receita ou despesa |
+| *mesada 200* | pergunta se é receita, despesa ou transferência |
+| *Transferi 500 do Nubank para a poupança* | transferência entre contas próprias (não é receita nem despesa) |
+| *passei 200 pra poupança* | transferência — pede a conta de origem com botões |
 
 Cartão de confirmação: **✅ Confirmar · ✏️ Editar · ✖️ Cancelar**. Em *Editar*: valor, descrição, data, categoria, forma de pagamento, conta, receita↔despesa, pago↔pendente. Cada edição gera uma nova versão do rascunho; **botões de versões antigas não confirmam nada**. Se já existir um lançamento igual (mesmo tipo e valor, até 2 dias de diferença), o cartão avisa **possível duplicidade**.
 
+### Gerenciar lançamentos já registrados
+- `/despesas` e `/receitas` listam os últimos lançamentos com botões **✏️** → valor, descrição, data, categoria ou **🗑️ excluir**.
+- Em linguagem natural: *apaga a última despesa*, *corrige o último lançamento*.
+- Toda alteração mostra **antes → depois** e só é aplicada após **Confirmar** (atômico, com auditoria). Só a própria pessoa gerencia seus lançamentos.
+
+### Transferências
+Movem dinheiro entre contas da **mesma pessoa** (corrente → poupança). Atualizam o saldo de cada conta e **não** entram em receitas, despesas, categorias ou relatórios. Também podem ser feitas e excluídas no site (Configurações → Suas contas).
+
 ### Perguntar (números sempre do banco)
-*Quanto tenho disponível? · Quanto gastei este mês? · Quanto recebi este mês? · Quanto gastei com alimentação? · Quais foram minhas últimas despesas? · Quanto gastei hoje? · Como está minha situação financeira? · Compare meus gastos deste mês com o anterior · quanto gastei em outubro? · maiores despesas da semana*
+*Quanto tenho disponível? · Quanto gastei este mês? · Quanto recebi este mês? · Quanto gastei com alimentação? · Quais foram minhas últimas despesas? · Quanto gastei hoje? · Quanto eu gastei essa semana? · Como está minha situação financeira? · Compare meus gastos deste mês com o anterior · quanto gastei em outubro? · maiores despesas da semana · Quanto posso gastar até o final do mês? · despesas acima de 100 este mês · quais são meus gastos recorrentes? · quais minhas fontes de renda? · faz uma análise dos meus gastos*
+
+Continuação de contexto (15 min): depois de *Quanto gastei com mercado?*, basta *e no mês passado?* ou *e com transporte?*.
+
+Períodos entendidos: hoje, ontem, *essa semana* (segunda até hoje), *semana passada* (segunda a domingo anteriores), últimos 7/30 dias, este mês, mês passado, nome do mês, este ano.
+
+**Quanto posso gastar** = saldo atual − contas pendentes até o fim do mês (inclui atrasadas) + receitas pendentes previstas até o fim do mês, dividido pelos dias restantes. Considera só o que está registrado.
 
 ### Metas
 *criar meta de 50 mil para comprar um carro até 12/2027* · *guardei 1.500 na meta carro* · *tirei 200 da meta viagem* · *Como está minha meta de comprar um carro?* (alvo, guardado, %, quanto falta, prazo, estimativa no ritmo atual — só quando há contribuições recentes).
@@ -81,11 +97,11 @@ Cartão de confirmação: **✅ Confirmar · ✏️ Editar · ✖️ Cancelar**.
 ### Comandos
 | | |
 |---|---|
-| `/start` | boas-vindas e vinculação (`/start link_CÓDIGO`) |
+| `/start` | boas-vindas com menu rápido (resumo, saldo, quanto posso gastar, metas…) e vinculação (`/start link_CÓDIGO`) |
 | `/ajuda` | o que o bot faz |
 | `/saldo` | saldo por conta + contas pendentes da semana |
 | `/resumo` | resumo do mês + menu: hoje, semana, mês, categorias, comparar, maiores despesas, receitas × despesas, evolução do saldo |
-| `/despesas`, `/receitas` | últimas movimentações |
+| `/despesas`, `/receitas` | últimas movimentações, com botões para editar/excluir |
 | `/metas` | metas com botões *Ver*, *Guardar* e *Nova meta* |
 | `/contas`, `/vencimentos` | pendências, com botão para marcar como paga |
 | `/familia` | visão da família (conforme permissão no site) |
@@ -97,6 +113,8 @@ Cartão de confirmação: **✅ Confirmar · ✏️ Editar · ✖️ Cancelar**.
 Entra **apenas** quando as regras não entendem a frase ou quando a pessoa pede explicação/análise (*por que gastei mais?*). Ela só consegue:
 - **ler** dados por ferramentas do backend (saldo, totais, categorias, lista de lançamentos, comparação de meses, fluxo, evolução, metas, contas) — sempre do próprio usuário;
 - **propor** lançamentos/metas/contribuições, que viram o mesmo cartão de confirmação.
+
+Custo sob controle: saudações, agradecimentos e tudo que as regras entendem **não** chamam a IA; ferramentas e prompt de sistema usam cache; há teto de `LUNA_AI_MAX_CALLS_PER_HOUR` chamadas por pessoa e prazo total de `LUNA_AI_TIMEOUT_MS`; o uso de tokens de cada chamada aparece no log `ia.resposta`. Se o provedor falhar, demorar ou recusar, o bot segue com as regras.
 
 Proteções: o valor de uma proposta precisa estar escrito na mensagem; toda resposta em texto é conferida — **qualquer "R$" que não esteja nos resultados das ferramentas faz a resposta ser descartada**; respostas que digam "registrei/salvei" são descartadas; não há ferramenta de SQL. Sem a chave, o bot funciona 100% com as regras.
 
@@ -115,6 +133,8 @@ Vencimentos (1–7 dias antes, com botão “Marcar como paga”), contas atrasa
 - **Idempotência**: `telegram_updates` registra cada `update_id` (status e tentativas). Repetições são ignoradas.
 - **Confirmação atômica**: trava do rascunho (status + versão + validade) e gravação acontecem na mesma transação do banco. Clique duplo, cartão antigo ou confirmação expirada não gravam. Se o banco falhar, nada é salvo e o rascunho continua disponível.
 - **Falhas**: erro transitório (banco, rede, Telegram) → resposta 500 para o Telegram reenviar, até 3 tentativas; depois disso o bot avisa que **não** concluiu. Mensagens de sucesso só são enviadas depois do commit.
+- **Limites**: `TELEGRAM_USER_RATE_PER_MIN` mensagens/botões por pessoa por minuto (padrão 30) e teto de chamadas de IA por hora. Em memória — com várias instâncias, vale por instância.
+- **Resiliência**: Postgres com timeout de conexão e de consulta; Bot API com até 3 tentativas e backoff exponencial (e respeito ao `retry_after` do 429); exceções não tratadas são registradas — rejeições seguem, exceções reiniciam o processo de forma controlada (operações financeiras são atômicas, nada fica pela metade).
 - **Logs** estruturados em JSON com `op` (`tg-<update_id>`), usuário e duração — sem texto das mensagens, valores ou tokens.
 
 > ⚠️ **Token exposto anteriormente.** Considere-o comprometido. No @BotFather: `/mybots` → escolha o bot → **API Token** → **Revoke current token**. Use somente o token novo. (A busca no histórico deste repositório não encontrou token versionado — o vazamento ocorreu fora dele, mas a revogação é obrigatória do mesmo jeito.)
@@ -210,7 +230,10 @@ Cada linha é um JSON. Principais eventos:
 | `telegram.confirmado` / `telegram.confirmacao_falhou` | gravação concluída / revertida |
 | `telegram.webhook_rejeitado` | requisição sem segredo válido |
 | `telegram.vinculado` | conta vinculada |
-| `ia.resposta` / `ia.proposta` / `ia.resposta_descartada` | uso da IA (e respostas bloqueadas pelo validador) |
+| `ia.resposta` / `ia.proposta` / `ia.resposta_descartada` | uso da IA com tokens (e respostas bloqueadas pelo validador) |
+| `ia.timeout` / `ia.indisponivel` / `ia.falhou` | provedor de IA lento ou fora — bot segue sem IA |
+| `telegram.limite_mensagens` | pessoa excedeu o limite por minuto |
+| `processo.promessa_rejeitada` / `processo.excecao` | erro não tratado (investigar) |
 | `notificacao.falhou` | aviso não entregue (será tentado de novo) |
 
 Exemplos:
@@ -219,6 +242,13 @@ Exemplos:
 grep '"msg":"telegram.update_erro"'          # falhas
 grep '"op":"tg-123456789"'                   # tudo de um update específico
 ```
+Disponibilidade (para um monitor externo, ex.: UptimeRobot a cada 5 min):
+```bash
+curl https://seu-dominio/healthz
+# {"ok":true,"db":{"ok":true,"ms":4},"telegram":{"configured":true,"lastHour":{"processed":42,"failed":0},...},"ai":{"enabled":false},"uptimeSec":3600}
+```
+`503` = banco fora. `telegram.lastHour.failed` crescendo = investigar `telegram.update_erro`. Sem dados pessoais ou financeiros na resposta.
+
 No banco:
 ```sql
 SELECT status, attempts, received_at FROM telegram_updates ORDER BY received_at DESC LIMIT 20;

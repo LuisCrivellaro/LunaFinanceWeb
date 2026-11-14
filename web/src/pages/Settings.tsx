@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, Copy, ExternalLink, Link2, Plus, Send, Unlink } from "lucide-react";
+import { Archive, ArrowLeftRight, Copy, ExternalLink, Link2, Plus, Send, Trash2, Unlink } from "lucide-react";
 import { del, get, patch, post } from "../lib/api";
 import { useAccounts, useApp, useCategories, useMe } from "../lib/app";
-import { centsToInput, firstName, memberColor, money, parseCents } from "../lib/format";
+import { centsToInput, dateFull, firstName, memberColor, money, parseCents, todayIso } from "../lib/format";
 import type { Me } from "../lib/types";
 import { Avatar, ICON_CHOICES, Icon, Modal, Skeleton } from "../components/ui";
 
@@ -218,15 +218,63 @@ function NotificationsSection({ me }: { me: Me }) {
 
 const ACCOUNT_TYPES: Record<string, string> = { checking: "Conta corrente", savings: "Poupança", cash: "Dinheiro", investment: "Investimentos", wallet: "Carteira digital", other: "Outra" };
 
+interface TransferItem { id: number; fromAccountName: string; toAccountName: string; amountCents: number; date: string; source: string }
+
+function TransfersList() {
+  const { toast } = useApp();
+  const qc = useQueryClient();
+  const list = useQuery({ queryKey: ["transfers"], queryFn: () => get<TransferItem[]>("/transfers") });
+  const remove = useMutation({
+    mutationFn: (id: number) => del(`/transfers/${id}`),
+    onSuccess: () => {
+      for (const k of ["transfers", "accounts", "dashboard"]) qc.invalidateQueries({ queryKey: [k] });
+      toast("Transferência excluída");
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  if (!list.data?.length) return null;
+  return (
+    <div>
+      <p className="eyebrow" style={{ margin: "4px 0 6px" }}>Transferências recentes</p>
+      <div className="list">
+        {list.data.slice(0, 6).map((t) => (
+          <div className="list-item" key={t.id} style={{ gridTemplateColumns: "1fr auto" }}>
+            <div style={{ minWidth: 0 }}>
+              <div className="title">{t.fromAccountName} → {t.toAccountName}</div>
+              <div className="sub">{dateFull(t.date)}{t.source === "telegram" ? " · pelo Telegram" : ""}</div>
+            </div>
+            <div className="row">
+              <b className="num">{money(t.amountCents)}</b>
+              <button className="btn btn-ghost icon-btn" aria-label="Excluir transferência" onClick={() => window.confirm("Excluir esta transferência? Os saldos das contas voltam ao que eram.") && remove.mutate(t.id)}><Trash2 size={14} /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AccountsSection() {
   const { data: accounts, isLoading } = useAccounts();
   const { toast } = useApp();
   const qc = useQueryClient();
   const [form, setForm] = useState<{ id?: number; name: string; type: string; initial: string } | null>(null);
+  const [transfer, setTransfer] = useState<{ from: number; to: number; amount: string; date: string } | null>(null);
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["accounts"] });
     qc.invalidateQueries({ queryKey: ["dashboard"] });
+    qc.invalidateQueries({ queryKey: ["transfers"] });
   };
+  const doTransfer = useMutation({
+    mutationFn: () => {
+      const cents = parseCents(transfer!.amount);
+      if (!cents || cents <= 0) throw new Error("Informe o valor.");
+      if (transfer!.from === transfer!.to) throw new Error("Escolha contas diferentes.");
+      return post("/transfers", { fromAccountId: transfer!.from, toAccountId: transfer!.to, amountCents: cents, date: transfer!.date });
+    },
+    onSuccess: () => { refresh(); setTransfer(null); toast("Transferência registrada"); },
+    onError: (e) => toast(e.message, "error"),
+  });
   const save = useMutation({
     mutationFn: () => {
       const body = { name: form!.name, type: form!.type, initialBalanceCents: parseCents(form!.initial) ?? 0 };
@@ -264,7 +312,30 @@ function AccountsSection() {
           ))}
         </div>
       )}
-      <div><button className="btn btn-sm" onClick={() => setForm({ name: "", type: "checking", initial: "" })}><Plus size={14} /> Nova conta</button></div>
+      <div className="row wrap">
+        <button className="btn btn-sm" onClick={() => setForm({ name: "", type: "checking", initial: "" })}><Plus size={14} /> Nova conta</button>
+        {(accounts?.length ?? 0) >= 2 && <button className="btn btn-sm" onClick={() => setTransfer({ from: accounts![0].id, to: accounts![1].id, amount: "", date: todayIso() })}><ArrowLeftRight size={14} /> Transferir entre contas</button>}
+      </div>
+      <TransfersList />
+      {transfer && accounts && (
+        <Modal title="Transferência entre contas" onClose={() => setTransfer(null)} footer={<><button className="btn" onClick={() => setTransfer(null)}>Cancelar</button><button className="btn btn-primary" disabled={doTransfer.isPending} onClick={() => doTransfer.mutate()}>Transferir</button></>}>
+          <p className="muted" style={{ margin: 0 }}>Move dinheiro entre suas contas. Não conta como receita nem despesa.</p>
+          <div className="grid grid-2">
+            <label className="field"><span>De</span>
+              <select className="select" value={transfer.from} onChange={(e) => setTransfer({ ...transfer, from: Number(e.target.value) })}>{accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+            </label>
+            <label className="field"><span>Para</span>
+              <select className="select" value={transfer.to} onChange={(e) => setTransfer({ ...transfer, to: Number(e.target.value) })}>{accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+            </label>
+          </div>
+          <div className="grid grid-2">
+            <label className="field"><span>Valor</span>
+              <div className="money-input"><span className="prefix">R$</span><input className="input" inputMode="decimal" value={transfer.amount} onChange={(e) => setTransfer({ ...transfer, amount: e.target.value })} /></div>
+            </label>
+            <label className="field"><span>Data</span><input className="input" type="date" max={todayIso()} value={transfer.date} onChange={(e) => setTransfer({ ...transfer, date: e.target.value })} /></label>
+          </div>
+        </Modal>
+      )}
       {form && (
         <Modal title={form.id ? "Editar conta" : "Nova conta"} onClose={() => setForm(null)} footer={<><button className="btn" onClick={() => setForm(null)}>Cancelar</button><button className="btn btn-primary" onClick={() => save.mutate()} disabled={!form.name || save.isPending}>Salvar</button></>}>
           <label className="field"><span>Nome</span><input className="input" value={form.name} maxLength={40} placeholder="Ex.: Nubank" onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>

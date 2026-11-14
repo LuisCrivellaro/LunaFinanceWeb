@@ -76,6 +76,28 @@ for (const email of ["lipe@demo.luna", "luciana@demo.luna"]) {
   await ctx.close();
 }
 
+// 2b) Transferência entre contas pelo site (requer 2+ contas; cria a segunda se faltar)
+{
+  const { ctx, page, errors } = await login("joao@demo.luna");
+  await page.goto(`${BASE}/configuracoes`);
+  await page.waitForSelector("#contas");
+  if (!(await page.getByRole("button", { name: "Transferir entre contas" }).count())) {
+    await page.getByRole("button", { name: "Nova conta" }).click();
+    await page.fill(".modal input[placeholder='Ex.: Nubank']", "Cofrinho E2E");
+    await page.click(".modal-foot .btn-primary");
+    await page.waitForTimeout(800);
+  }
+  await page.getByRole("button", { name: "Transferir entre contas" }).click();
+  await page.fill(".modal .money-input input", "12,34");
+  await page.click(".modal-foot .btn-primary");
+  const ok = await page.getByText("Transferência registrada").waitFor({ timeout: 5000 }).then(() => true, () => false);
+  check(ok, "transferência pelo site registrada");
+  await page.waitForTimeout(600);
+  check((await page.getByText("Transferências recentes").count()) === 1, "lista de transferências recentes aparece");
+  check(errors.length === 0, `sem erros de JavaScript na transferência ${errors.join(" | ")}`);
+  await ctx.close();
+}
+
 // 3) Responsividade: sem rolagem horizontal no celular
 {
   const { ctx, page } = await login("luciana@demo.luna", { width: 375, height: 760 });

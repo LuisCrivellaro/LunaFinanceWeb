@@ -20,9 +20,10 @@ import { parseMoneyToCents } from "../lib/money.js";
 import type { AuthUser } from "../services/access.js";
 import { PAYMENT_METHODS, type PaymentMethod } from "../services/transactions.js";
 import {
-  compareMonths, getBalance, getCategoryBreakdown, getCategoryTotal, getEvolution, getFlow, getGoals, getPendingBills,
-  getPeriodTotals, getTransactionsList,
+  compareMonths, getBalance, getCategoryBreakdown, getCategoryTotal, getEvolution, getFlow, getGoals, getIncomeSources, getInsights,
+  getPendingBills, getPeriodTotals, getRecurring, getSpendable, getTransactionsList,
 } from "./data.js";
+import { findAccount } from "./parser.js";
 import type { Intent } from "./nlu.js";
 import { findGoal } from "./nlu.js";
 import { normalize, type AccountLite, type CategoryLite } from "./parser.js";
@@ -97,6 +98,8 @@ export const TOOLS: Anthropic.Tool[] = [
     search: nullableString,
     limit: { type: "integer" },
     order: { type: "string", enum: ["recent", "largest"] },
+    min_amount_cents: { type: ["integer", "null"] },
+    max_amount_cents: { type: ["integer", "null"] },
   }),
   tool("compare_months", "Compara despesas e receitas de um mês com o anterior (no mês atual, compara o mesmo intervalo de dias).", {
     month: { type: "string", description: "AAAA-MM" },
@@ -105,6 +108,15 @@ export const TOOLS: Anthropic.Tool[] = [
   tool("get_balance_evolution", "Saldo no fim de cada mês dos últimos N meses.", { months: { type: "integer" } }),
   tool("get_goals", "Metas do usuário e da família: alvo, guardado, falta, prazo, ritmo e estimativa.", {}),
   tool("get_pending_bills", "Contas a pagar atrasadas e dos próximos 30 dias.", {}),
+  tool("get_spendable", "Quanto o usuário ainda pode gastar até o fim do mês (saldo − contas pendentes + receitas previstas) e por dia.", {}),
+  tool("get_recurring", "Recorrências cadastradas e gastos que se repetem todo mês.", {}),
+  tool("get_income_sources", "Fontes de renda dos últimos 3 meses com participação.", {}),
+  tool("get_insights", "Análise do mês: projeção de gastos, média dos meses anteriores, maior categoria, maior alta, gastos fixos e taxa de poupança.", {}),
+  tool("propose_transfer", "Cria um RASCUNHO de transferência entre duas contas do próprio usuário.", {
+    amount_text: { type: "string" },
+    from_account_name: nullableString,
+    to_account_name: nullableString,
+  }),
   tool("propose_transaction", "Cria um RASCUNHO de receita/despesa para o usuário confirmar.", {
     kind: { type: "string", enum: ["income", "expense"] },
     amount_text: { type: "string", description: "Trecho exato do valor como o usuário escreveu" },
@@ -172,8 +184,24 @@ async function runTool(name: string, input: Record<string, unknown>, deps: Assis
           search: typeof input.search === "string" && input.search ? input.search.slice(0, 40) : undefined,
           limit: typeof input.limit === "number" ? input.limit : 10,
           order: input.order === "largest" ? "largest" : "recent",
+          minCents: typeof input.min_amount_cents === "number" && input.min_amount_cents > 0 ? input.min_amount_cents : null,
+          maxCents: typeof input.max_amount_cents === "number" && input.max_amount_cents > 0 ? input.max_amount_cents : null,
         }),
       };
+    }
+    case "get_spendable":
+      return { data: await getSpendable(deps.db, deps.user) };
+    case "get_recurring":
+      return { data: await getRecurring(deps.db, deps.user) };
+    case "get_income_sources":
+      return { data: await getIncomeSources(deps.db, deps.user) };
+    case "get_insights":
+      return { data: await getInsights(deps.db, deps.user) };
+    case "propose_transfer": {
+      const cents = amountFromUser(input.amount_text, userText);
+      const from = typeof input.from_account_name === "string" ? findAccount(normalize(input.from_account_name), deps.accounts) : null;
+      const to = typeof input.to_account_name === "string" ? findAccount(normalize(input.to_account_name), deps.accounts) : null;
+      return { proposal: { type: "transfer", amountCents: cents, fromAccountId: from?.id ?? null, toAccountId: to && to.id !== from?.id ? to.id : null, date: deps.today } };
     }
     case "compare_months":
       return { data: await compareMonths(deps.db, ids, isYearMonth(input.month) ? input.month : deps.today.slice(0, 7)) };
@@ -244,27 +272,56 @@ export function validateAnswer(text: string, toolData: unknown[]): { ok: boolean
   return { ok: true };
 }
 
-export function createAssistant(opts: { apiKey?: string; model: string; effort: "low" | "medium" | "high"; log: Logger; client?: MessagesClient }): Assistant {
+export function createAssistant(opts: {
+  apiKey?: string; model: string; effort: "low" | "medium" | "high"; log: Logger; client?: MessagesClient; timeoutMs?: number;
+}): Assistant {
   const client: MessagesClient = opts.client ?? new Anthropic({ apiKey: opts.apiKey, timeout: 30000, maxRetries: 1 });
+  const timeoutMs = opts.timeoutMs ?? Number(process.env.LUNA_AI_TIMEOUT_MS ?? 40000);
+  const inner = createInner(client, opts);
   return {
+    // prazo total da conversa com a IA (todas as rodadas): o usuário não fica esperando para sempre
     async respond(text, deps) {
+      let timer: NodeJS.Timeout | undefined;
+      const timeout = new Promise<AssistantResult>((resolve) => {
+        timer = setTimeout(() => {
+          opts.log.warn("ia.timeout", { user_id: deps.user.id, ms: timeoutMs });
+          resolve({ type: "none", reason: "timeout" });
+        }, timeoutMs);
+      });
+      try {
+        return await Promise.race([inner(text, deps), timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+function createInner(client: MessagesClient, opts: { model: string; effort: "low" | "medium" | "high"; log: Logger }) {
+  return async function respond(text: string, deps: AssistantDeps): Promise<AssistantResult> {
+    {
       const started = Date.now();
       const messages: Anthropic.MessageParam[] = [
         { role: "user", content: `Hoje é ${deps.today}. Usuário: ${deps.user.name.split(" ")[0]}.\n<mensagem>${text.slice(0, 600)}</mensagem>` },
       ];
       const toolData: unknown[] = [];
+      const usage = { input: 0, output: 0, cacheRead: 0 };
       try {
         for (let round = 0; round < MAX_ROUNDS; round++) {
           const res = await client.messages.create({
             model: opts.model,
             max_tokens: 4096,
-            system: SYSTEM,
+            // ferramentas + sistema são estáveis: cache reduz custo e latência nas rodadas seguintes
+            system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
             tools: TOOLS,
             tool_choice: { type: "auto" },
             output_config: { effort: opts.effort },
             messages,
           } as Anthropic.MessageCreateParamsNonStreaming);
 
+          usage.input += res.usage?.input_tokens ?? 0;
+          usage.output += res.usage?.output_tokens ?? 0;
+          usage.cacheRead += res.usage?.cache_read_input_tokens ?? 0;
           if (res.stop_reason === "refusal") return { type: "none", reason: "refusal" };
           if (res.stop_reason === "max_tokens") return { type: "none", reason: "max_tokens" };
 
@@ -277,7 +334,7 @@ export function createAssistant(opts: { apiKey?: string; model: string; effort: 
               opts.log.warn("ia.resposta_descartada", { user_id: deps.user.id, motivo: check.reason });
               return { type: "none", reason: check.reason ?? "inválida" };
             }
-            opts.log.info("ia.resposta", { user_id: deps.user.id, rounds: round + 1, ms: Date.now() - started });
+            opts.log.info("ia.resposta", { user_id: deps.user.id, rounds: round + 1, ms: Date.now() - started, tokens: usage });
             return { type: "text", text: answer };
           }
 
@@ -287,7 +344,7 @@ export function createAssistant(opts: { apiKey?: string; model: string; effort: 
             try {
               const out = await runTool(u.name, (u.input ?? {}) as Record<string, unknown>, deps, text);
               if (out.proposal) {
-                opts.log.info("ia.proposta", { user_id: deps.user.id, tool: u.name });
+                opts.log.info("ia.proposta", { user_id: deps.user.id, tool: u.name, tokens: usage });
                 return { type: "proposal", intent: out.proposal };
               }
               toolData.push(out.data);
@@ -302,9 +359,9 @@ export function createAssistant(opts: { apiKey?: string; model: string; effort: 
         }
         return { type: "none", reason: "limite de rodadas" };
       } catch (err) {
-        opts.log.warn("ia.falhou", { err: (err as Error).message });
+        opts.log.warn("ia.falhou", { err: (err as Error).message.slice(0, 160) });
         return { type: "none", reason: "erro" };
       }
-    },
+    }
   };
 }

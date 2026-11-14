@@ -5,6 +5,7 @@ Gestão financeira da família — pelo site e pelo Telegram, no mesmo banco de 
 - **Painel** com saldo, receitas, despesas, resultado do mês, evolução do patrimônio, gastos por categoria, próximos pagamentos, contas atrasadas, metas e resumo por pessoa — alternando entre visão **individual** e **familiar**.
 - **Movimentações**: receitas e despesas, categorias personalizadas, fixas/variáveis, parcelamentos, recorrência mensal, vencimentos, filtros, pesquisa, edição e exclusão.
 - **Contas a pagar**: atrasadas, a vencer, pagas, recorrentes e histórico.
+- **Transferências** entre contas próprias (não contam como receita/despesa).
 - **Metas** individuais e familiares, com contribuições, retiradas e progresso (fases da lua 🌒).
 - **Relatórios** mensais e anuais, por categoria e por responsável, com exportação **CSV** e **PDF** (impressão).
 - **Bot do Telegram**: registro por linguagem natural (valor, data, categoria, conta e forma de pagamento) com resumo, edição e confirmação; consultas e relatórios; metas; pagamento de contas; avisos automáticos; IA opcional com ferramentas controladas. Guia: [`docs/TELEGRAM.md`](docs/TELEGRAM.md).
