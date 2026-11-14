@@ -1,17 +1,22 @@
 /**
- * Interpretador determinístico de mensagens em português.
- * Extrai: tipo (receita/despesa), valor, descrição, categoria, data, situação
- * e parcelas. Não depende de IA — a IA (opcional) só entra quando as regras
- * não conseguem entender a frase, e mesmo assim passa pela mesma validação.
+ * Extração determinística de campos de mensagens em português do Brasil:
+ * valor, tipo (receita/despesa), descrição, categoria, data, situação,
+ * parcelas, conta e forma de pagamento. Não usa IA.
  */
 import { addDays, addMonths, isIsoDate, makeDate } from "../lib/clock.js";
 import { parseMoneyToCents } from "../lib/money.js";
+import type { PaymentMethod } from "../services/transactions.js";
 
 export interface CategoryLite {
   id: number;
   name: string;
   kind: "income" | "expense";
   keywords: string;
+}
+
+export interface AccountLite {
+  id: number;
+  name: string;
 }
 
 export interface Draft {
@@ -22,17 +27,16 @@ export interface Draft {
   date: string;
   status: "paid" | "pending";
   installments: number | null;
-  /** Trecho exato do valor como foi escrito — para o usuário conferir. */
+  paymentMethod: PaymentMethod | null;
+  accountId: number | null;
+  /** Trecho exato do valor como foi escrito — para conferência. */
   amountText: string;
 }
 
-export type Intent =
+export type EntryParse =
   | { type: "entry"; draft: Draft }
   | { type: "incomplete"; missing: Array<"amount" | "kind">; partial: Partial<Draft> }
-  | { type: "query"; query: QueryIntent }
   | { type: "unknown" };
-
-export type QueryIntent = "balance" | "family" | "income" | "expenses" | "bills" | "upcoming" | "goals" | "summary";
 
 export function normalize(s: string): string {
   return s
@@ -43,20 +47,57 @@ export function normalize(s: string): string {
     .trim();
 }
 
-const INCOME_WORDS = /\b(recebi|receber|ganhei|ganho|entrou|entrada|caiu|receita|salario|vendi|reembolso|reembolsaram|depositaram|me pagaram|pix recebido|rendeu|rendimento)\b/;
-const EXPENSE_WORDS = /\b(gastei|gasto|paguei|pagar|pago|despesa|comprei|compra|conta|boleto|fatura|debito|mensalidade|parcela|assinatura|saiu)\b/;
-const PENDING_WORDS = /\b(vence|vencimento|vencendo|a pagar|pagar|para (o )?dia|pra (o )?dia|ate (o )?dia|boleto|agendar|agendado|vai vencer|lembrar)\b/;
+export const INCOME_WORDS = /\b(recebi|receber|ganhei|ganho|entrou|entrada|caiu|receita|salario|vendi|reembolso|reembolsaram|depositaram|me pagaram|pix recebido|rendeu|rendimento)\b/;
+export const EXPENSE_WORDS = /\b(gastei|gasto|paguei|pagar|pago|despesa|comprei|compra|conta|boleto|fatura|debito|mensalidade|parcela|assinatura|saiu)\b/;
+const PENDING_WORDS = /\b(vence|vencimento|vencendo|a pagar|pagar|para (o )?dia|pra (o )?dia|ate (o )?dia|agendar|agendado|vai vencer|lembrar)\b/;
 const PAID_WORDS = /\b(paguei|gastei|comprei|recebi|ganhei|entrou|caiu|pago|ja paguei)\b/;
 
 const MONEY_RE =
   /(r\$\s*\d[\d.,]*(?:\s*(?:mil|k)\b)?|\d[\d.,]*\s*(?:mil|k)\b|\d[\d.,]*\s*(?:reais|real|conto|contos|pila)\b|\d+(?:[.,]\d{3})*(?:[.,]\d{1,2})?)/gi;
 
-interface Span {
+export interface Span {
   start: number;
   end: number;
 }
 
-function findDate(n: string, today: string, pendingHint: boolean): { date: string | null; spans: Span[]; explicitFuture: boolean } {
+const PAYMENT_PATTERNS: Array<[PaymentMethod, RegExp]> = [
+  ["pix", /\b(?:no |via |pelo |por |com )?pix\b/],
+  ["credit_card", /\b(?:no |com o |pelo )?(?:cartao de credito|credito|cartao)\b/],
+  ["debit_card", /\b(?:no |com o |pelo )?(?:cartao de debito|debito)\b/],
+  ["cash", /\b(?:em |no |com )?(?:dinheiro|especie)\b/],
+  ["transfer", /\b(?:via |por |com )?(?:transferencia|ted|doc)\b/],
+  ["boleto", /\b(?:no |via |pelo |por )boleto\b/],
+];
+
+export function findPaymentMethod(n: string): { method: PaymentMethod; span: Span } | null {
+  // débito explícito vence "cartão" genérico
+  const order: PaymentMethod[] = ["pix", "debit_card", "credit_card", "cash", "transfer", "boleto"];
+  for (const method of order) {
+    const re = PAYMENT_PATTERNS.find(([m]) => m === method)![1];
+    const m = n.match(re);
+    if (m) return { method, span: { start: m.index!, end: m.index! + m[0].length } };
+  }
+  return null;
+}
+
+export function findAccount(n: string, accounts: AccountLite[]): { id: number; span: Span } | null {
+  let best: { id: number; span: Span; len: number } | null = null;
+  for (const a of accounts) {
+    const name = normalize(a.name);
+    if (name.length < 3 || name === "conta principal") continue;
+    const re = new RegExp(`\\b(?:no |na |pelo |pela |do |da )?${escapeRe(name)}\\b`);
+    const m = n.match(re);
+    if (m && (!best || name.length > best.len)) best = { id: a.id, span: { start: m.index!, end: m.index! + m[0].length }, len: name.length };
+  }
+  return best ? { id: best.id, span: best.span } : null;
+}
+
+function escapeRe(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Interpreta datas: hoje, ontem, anteontem, amanhã, dd/mm[/aaaa], "dia 20". */
+export function findDate(n: string, today: string, pendingHint: boolean): { date: string | null; spans: Span[]; explicitFuture: boolean } {
   const spans: Span[] = [];
   let date: string | null = null;
   let explicitFuture = false;
@@ -78,7 +119,6 @@ function findDate(n: string, today: string, pendingHint: boolean): { date: strin
     explicitFuture = true;
     take(m);
   }
-  // dd/mm ou dd/mm/aaaa
   const dm = n.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
   if (dm) {
     const d = Number(dm[1]);
@@ -93,16 +133,15 @@ function findDate(n: string, today: string, pendingHint: boolean): { date: strin
       take(dm);
     }
   }
-  // "dia 20" / "no dia 5"
   const dd = n.match(/\b(?:(?:para|pra|ate|no|todo|vence|vencimento)\s+(?:o\s+)?)?dia\s+(\d{1,2})\b/);
   if (dd && !dm) {
     const d = Number(dd[1]);
     if (d >= 1 && d <= 31) {
       let iso = makeDate(ty, tm, d);
       if (pendingHint) {
-        if (d < td) iso = addMonths(makeDate(ty, tm, 1), 1, d); // já passou → próximo mês
+        if (d < td) iso = addMonths(makeDate(ty, tm, 1), 1, d);
       } else if (d > td) {
-        iso = addMonths(makeDate(ty, tm, 1), -1, d); // fato passado → mês anterior
+        iso = addMonths(makeDate(ty, tm, 1), -1, d);
       }
       date = iso;
       explicitFuture = iso > today;
@@ -112,20 +151,26 @@ function findDate(n: string, today: string, pendingHint: boolean): { date: strin
   return { date, spans, explicitFuture };
 }
 
+/** Data digitada isoladamente (edição): "ontem", "12/11", "12/11/2026", "2026-11-12". */
+export function parseDateText(text: string, today: string): string | null {
+  const t = text.trim();
+  if (isIsoDate(t)) return t;
+  const { date } = findDate(normalize(t), today, false);
+  return date;
+}
+
 function overlaps(a: Span, list: Span[]) {
   return list.some((b) => a.start < b.end && b.start < a.end);
 }
 
-function findAmount(n: string, exclude: Span[]): { cents: number; text: string; span: Span } | null {
+export function findAmount(n: string, exclude: Span[]): { cents: number; text: string; span: Span } | null {
   const candidates: Array<{ cents: number; text: string; span: Span; score: number }> = [];
   for (const m of n.matchAll(MONEY_RE)) {
     const span = { start: m.index!, end: m.index! + m[0].length };
     if (overlaps(span, exclude)) continue;
     const raw = m[0].replace(/\s*(reais|real|contos?|pila)\b/, "").trim();
-    const after = n.slice(span.end, span.end + 3);
-    if (/^\s*x\b/.test(after) || /^\s*vezes/.test(n.slice(span.end, span.end + 7))) continue; // "3x", "3 vezes"
-    const before = n.slice(Math.max(0, span.start - 10), span.start);
-    if (/(em|parcelad[oa] em)\s*$/.test(before) && /^\s*(x|vezes|parcelas)/.test(n.slice(span.end, span.end + 9))) continue;
+    const after = n.slice(span.end, span.end + 9);
+    if (/^\s*(x\b|vezes|parcelas)/.test(after)) continue; // "3x", "3 vezes"
     const cents = parseMoneyToCents(raw);
     if (!cents) continue;
     let score = 0;
@@ -153,7 +198,7 @@ export function matchCategory(n: string, kind: "income" | "expense", categories:
     if (c.kind !== kind) continue;
     const terms = [c.name, ...c.keywords.split(",")].map((t) => normalize(t)).filter((t) => t.length >= 2);
     for (const term of terms) {
-      const re = new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+      const re = new RegExp(`\\b${escapeRe(term)}\\b`);
       if (re.test(n) && (!best || term.length > best.len)) best = { cat: c, len: term.length };
     }
   }
@@ -164,27 +209,26 @@ const FILLER = new Set(
   ("registra registrar registre anota anotar anote lanca lancar lance adiciona adicionar adicione coloca colocar coloque " +
     "uma um de do da dos das com no na nos nas em para pra pro por o a os as e que eu meu minha foi hoje ontem anteontem amanha " +
     "despesa receita gasto gastei paguei pago pagar recebi receber ganhei entrou caiu comprei compra valor reais real r$ " +
-    "dia vence vencimento vencendo ate x vezes parcelas parcelado parcelada mil k favor por favor pf pfv agora la aqui")
+    "dia vence vencimento vencendo ate x vezes parcelas parcelado parcelada mil k favor por favor pf pfv agora la aqui " +
+    "pix cartao credito debito dinheiro especie transferencia ted via pelo pela")
     .split(" "),
 );
 
 function buildDescription(original: string, n: string, removeSpans: Span[], kind: "income" | "expense", category: CategoryLite | null) {
-  // "conta de internet" → "Conta de internet"
-  const conta = n.match(/\b(conta|boleto|fatura|mensalidade|assinatura) d[aeo]s? ([a-z0-9 ]{2,30}?)(?= de r\$| de \d| r\$| \d| para| pra| no dia| dia| vence|$)/);
+  const conta = n.match(/\b(conta|boleto|fatura|mensalidade|assinatura) d[aeo]s? ([a-z0-9 ]{2,30}?)(?= de r\$| de \d| r\$| \d| para| pra| no dia| dia| vence| no | pelo | via |$)/);
   if (conta) return capitalize(`${conta[1]} de ${conta[2].trim()}`);
-  // "com supermercado" / "no mercado" / "de salário"
-  const prep = n.match(/\b(?:com|no|na|em|de|pro|pra|para) (?:o |a )?([a-z0-9][a-z0-9 ]{1,40}?)(?= de r\$| r\$| \d|,|\.| hoje| ontem| para| pra| no dia| dia| em \d|$)/g);
   const chars = n.split("");
   for (const s of removeSpans) for (let i = s.start; i < s.end; i++) chars[i] = " ";
-  const cleaned = chars.join("");
+  const cleaned = chars.join("").replace(/\s+/g, " ");
+  const prep = cleaned.match(/\b(?:com|no|na|em|de|pro|pra|para) (?:o |a |um |uma )?([a-z0-9][a-z0-9 ]{1,40}?)(?=,|\.| hoje| ontem| para| pra| no dia| dia| em \d|$)/g);
   if (prep) {
     for (const p of prep) {
-      const words = p.split(" ").slice(1).filter((w) => !FILLER.has(w) && !/^\d/.test(w));
-      if (words.length && cleaned.includes(words.join(" "))) return capitalize(restoreAccents(original, words.join(" ")));
+      const words = p.split(" ").slice(1).filter((w) => w && !FILLER.has(w) && !/^\d/.test(w));
+      if (words.length) return capitalize(restoreAccents(original, words.slice(0, 5).join(" ")));
     }
   }
   const words = cleaned.split(/[\s,.;!?]+/).filter((w) => w && !FILLER.has(w) && !/^[\d.,]+$/.test(w) && !/^r\$/.test(w));
-  if (words.length) return capitalize(restoreAccents(original, words.slice(0, 6).join(" ")));
+  if (words.length) return capitalize(restoreAccents(original, words.slice(0, 5).join(" ")));
   return category?.name ?? (kind === "income" ? "Receita" : "Despesa");
 }
 
@@ -192,79 +236,47 @@ function buildDescription(original: string, n: string, removeSpans: Span[], kind
 function restoreAccents(original: string, normalizedPhrase: string) {
   const words = original.split(/\s+/);
   const target = normalizedPhrase.split(" ");
+  const clean = (w: string) => normalize(w).replace(/[^a-z0-9]/g, "");
   for (let i = 0; i + target.length <= words.length; i++) {
     const slice = words.slice(i, i + target.length);
-    if (slice.map((w) => normalize(w).replace(/[^a-z0-9]/g, "")).join(" ") === target.map((t) => t.replace(/[^a-z0-9]/g, "")).join(" ")) {
+    if (slice.map(clean).join(" ") === target.map((t) => t.replace(/[^a-z0-9]/g, "")).join(" ")) {
       return slice.join(" ").replace(/[,.;!?]+$/, "");
     }
   }
   return normalizedPhrase;
 }
 
-function capitalize(s: string) {
+export function capitalize(s: string) {
   const t = s.trim();
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
-const QUERY_PATTERNS: Array<[QueryIntent, RegExp]> = [
-  ["family", /\b(familia|familiar|todos|da casa)\b.*\b(saldo|resumo|gast|receit|despes)|\b(saldo|resumo).*\b(familia|familiar)\b/],
-  ["upcoming", /\b(proxim[oa]s?|vai vencer|vencem|vencimentos?)\b/],
-  ["bills", /\b(contas?|boletos?)\b.*\b(pendentes?|atrasad[oa]s?|abert[oa]s?|a pagar|pagar)\b|\b(o que|oque) (eu )?(tenho|falta) (pra|para|a) pagar\b|\batrasad/],
-  ["goals", /\bmetas?\b|\bobjetivos?\b/],
-  ["balance", /\b(saldo|quanto (eu )?tenho)\b/],
-  ["income", /\b(quanto|quais|minhas?|total de)\b.*\b(recebi|receitas?|ganhei|entrou)\b|\breceitas do mes\b/],
-  ["expenses", /\b(quanto|quais|minhas?|total de)\b.*\b(gastei|despesas?|gastos?|paguei)\b|\bdespesas do mes\b|\bgastos do mes\b/],
-  ["summary", /\b(resumo|balanco|como (estao|esta|tao|ta) (as |minhas )?(financas|contas)|relatorio)\b/],
-];
-
-export function detectQuery(n: string): QueryIntent | null {
-  const isQuestion = /\?$/.test(n) || /^(qual|quais|quanto|quantos|como|tenho|o que|oque|mostra|mostrar|ver|me (mostra|diz|fala)|lista)/.test(n);
-  const hasAmount = /\d/.test(n.replace(/\b\d{1,2}\/\d{1,2}\b/g, ""));
-  if (hasAmount && !isQuestion) return null; // provavelmente é um lançamento
-  for (const [intent, re] of QUERY_PATTERNS) if (re.test(n)) return intent;
-  return null;
-}
-
-export function parseMessage(text: string, categories: CategoryLite[], today: string): Intent {
+/** Extrai um lançamento (receita/despesa) de uma frase. */
+export function parseEntry(text: string, categories: CategoryLite[], today: string, accounts: AccountLite[] = []): EntryParse {
   const original = text.trim().slice(0, 500);
   const n = normalize(original);
   if (!n) return { type: "unknown" };
-
-  const query = detectQuery(n);
-  if (query) return { type: "query", query };
 
   const income = INCOME_WORDS.test(n);
   const expense = EXPENSE_WORDS.test(n);
   let kind: "income" | "expense" | null = null;
   if (income && !expense) kind = "income";
   else if (expense && !income) kind = "expense";
-  else if (income && expense) {
-    // "recebi o pagamento..." vs "paguei a conta" — o verbo no início decide
-    const fi = n.search(INCOME_WORDS);
-    const fe = n.search(EXPENSE_WORDS);
-    kind = fi <= fe ? "income" : "expense";
-  }
+  else if (income && expense) kind = n.search(INCOME_WORDS) <= n.search(EXPENSE_WORDS) ? "income" : "expense";
 
   const pendingHint = PENDING_WORDS.test(n) && !/\b(paguei|ja paguei|recebi)\b/.test(n);
   const { date: foundDate, spans: dateSpans, explicitFuture } = findDate(n, today, pendingHint);
   const inst = findInstallments(n);
+  const payment = findPaymentMethod(n);
+  const account = findAccount(n, accounts);
   const exclude = [...dateSpans, ...(inst ? [inst.span] : [])];
   const amount = findAmount(n, exclude);
 
   if (amount && !kind) {
-    // sem verbo ("uber 23"): se só uma categoria casar, o tipo vem dela
     const asExpense = matchCategory(n, "expense", categories);
     const asIncome = matchCategory(n, "income", categories);
     if (asExpense && !asIncome) kind = "expense";
     else if (asIncome && !asExpense) kind = "income";
-  }
-
-  if (!amount || !kind) {
-    if (!amount && !kind) return { type: "unknown" };
-    const missing: Array<"amount" | "kind"> = [];
-    if (!amount) missing.push("amount");
-    if (!kind) missing.push("kind");
-    return { type: "incomplete", missing, partial: { amountCents: amount?.cents, kind: kind ?? undefined, amountText: amount?.text } };
   }
 
   const date = foundDate ?? today;
@@ -272,8 +284,33 @@ export function parseMessage(text: string, categories: CategoryLite[], today: st
   if (pendingHint || explicitFuture || date > today) status = "pending";
   if (PAID_WORDS.test(n) && !pendingHint && date <= today) status = "paid";
 
+  const removeSpans = [...(amount ? [amount.span] : []), ...exclude, ...(payment ? [payment.span] : []), ...(account ? [account.span] : [])];
+
+  if (!amount || !kind) {
+    if (!amount && !kind) return { type: "unknown" };
+    const missing: Array<"amount" | "kind"> = [];
+    if (!amount) missing.push("amount");
+    if (!kind) missing.push("kind");
+    const category = kind ? matchCategory(n, kind, categories) : null;
+    return {
+      type: "incomplete",
+      missing,
+      partial: {
+        amountCents: amount?.cents,
+        amountText: amount?.text,
+        kind: kind ?? undefined,
+        date,
+        status,
+        categoryId: category?.id ?? null,
+        paymentMethod: payment?.method ?? null,
+        accountId: account?.id ?? null,
+        description: kind ? buildDescription(original, n, removeSpans, kind, category).slice(0, 160) : undefined,
+      },
+    };
+  }
+
   const category = matchCategory(n, kind, categories) ?? categories.find((c) => c.kind === kind && /^outr[ao]s/i.test(normalize(c.name))) ?? null;
-  const description = buildDescription(original, n, [amount.span, ...exclude], kind, category).slice(0, 160);
+  const description = buildDescription(original, n, removeSpans, kind, category).slice(0, 160);
 
   return {
     type: "entry",
@@ -285,6 +322,8 @@ export function parseMessage(text: string, categories: CategoryLite[], today: st
       date,
       status,
       installments: kind === "expense" && inst ? inst.count : null,
+      paymentMethod: payment?.method ?? null,
+      accountId: account?.id ?? null,
       amountText: amount.text,
     },
   };

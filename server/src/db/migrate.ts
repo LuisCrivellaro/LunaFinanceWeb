@@ -25,7 +25,7 @@ export const DEFAULT_CATEGORIES: Array<{
   keywords: string;
 }> = [
   { name: "Salário", kind: "income", icon: "briefcase", color: "#2F8F6B", keywords: "salario, salário, pagamento, holerite, contracheque" },
-  { name: "Freelance", kind: "income", icon: "laptop", color: "#3E7CB1", keywords: "freela, freelance, projeto, servico, serviço, bico" },
+  { name: "Freelance", kind: "income", icon: "laptop", color: "#3E7CB1", keywords: "freela, freelance, projeto, servico, serviço, bico, trabalho, job" },
   { name: "Investimentos", kind: "income", icon: "trending-up", color: "#6A5ACD", keywords: "rendimento, dividendo, juros, cdb, tesouro" },
   { name: "Outras receitas", kind: "income", icon: "plus-circle", color: "#7C8A96", keywords: "presente, reembolso, venda, pix recebido" },
   { name: "Mercado", kind: "expense", icon: "shopping-cart", color: "#C9772B", keywords: "mercado, supermercado, feira, hortifruti, açougue, acougue, padaria, compras" },
@@ -37,7 +37,7 @@ export const DEFAULT_CATEGORIES: Array<{
   { name: "Educação", kind: "expense", icon: "graduation-cap", color: "#3F7F8C", keywords: "faculdade, escola, curso, livro, mensalidade, fiap, material" },
   { name: "Lazer", kind: "expense", icon: "sparkles", color: "#8A58A6", keywords: "cinema, show, viagem, passeio, bar, jogo, ingresso" },
   { name: "Assinaturas", kind: "expense", icon: "repeat", color: "#5A6FB0", keywords: "netflix, spotify, assinatura, streaming, amazon prime, disney, youtube, icloud" },
-  { name: "Compras", kind: "expense", icon: "shopping-bag", color: "#A0607A", keywords: "roupa, loja, shopping, presente, eletronico, eletrônico" },
+  { name: "Compras", kind: "expense", icon: "shopping-bag", color: "#A0607A", keywords: "roupa, loja, shopping, presente, eletronico, eletrônico, camiseta, camisa, calça, tênis, tenis, sapato, blusa, vestido" },
   { name: "Pets", kind: "expense", icon: "paw-print", color: "#9A7B4F", keywords: "pet, ração, racao, veterinario, veterinário, banho e tosa" },
   { name: "Impostos e taxas", kind: "expense", icon: "landmark", color: "#6E6E73", keywords: "imposto, taxa, ipva, multa, tarifa, anuidade" },
   { name: "Outras despesas", kind: "expense", icon: "circle-dashed", color: "#8A8F98", keywords: "" },

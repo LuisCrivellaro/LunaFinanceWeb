@@ -1,29 +1,36 @@
 /**
- * Lógica do bot: recebe um "update" da Telegram Bot API e responde.
- * Fluxo de segurança de cada mensagem:
- *   1. dedup por update_id (o Telegram reenvia quando não recebe 200)
- *   2. só chats privados
- *   3. identidade = from.id vinculado (nunca o nome digitado)
- *   4. permissões = as mesmas do site (services/access.ts)
- *   5. qualquer gravação financeira passa por confirmação explícita
+ * Bot do Luna Finance — roteamento de mensagens e botões.
+ *
+ * Fluxo de cada update:
+ *   1. idempotência por update_id (com retentativa controlada após falha);
+ *   2. só chats privados;
+ *   3. identidade = Telegram ID vinculado (nunca o nome digitado);
+ *   4. permissões = as mesmas do site (services/access.ts);
+ *   5. gravações financeiras só após confirmação explícita, de forma atômica.
  */
-import { randomBytes } from "node:crypto";
 import type { AppContext } from "../context.js";
-import { addDays, currentMonth, monthNamePt, monthRange, now, today } from "../lib/clock.js";
 import { HttpError } from "../lib/errors.js";
-import { resolveScope, type AuthUser } from "../services/access.js";
-import { listAccounts, totalBalance } from "../services/accounts.js";
+import { monthRange, today } from "../lib/clock.js";
+import type { AuthUser } from "../services/access.js";
+import { listAccounts } from "../services/accounts.js";
 import { listCategories } from "../services/categories.js";
-import { listGoals } from "../services/goals.js";
-import { byCategory, monthTotals } from "../services/insights.js";
-import { listMembers } from "../services/members.js";
-import { createTransaction, getTransactions, markPaid, type TransactionRow } from "../services/transactions.js";
+import { contributeWith, createGoalWith, listGoals } from "../services/goals.js";
+import { createTransactionWith, getTransactions, markPaid, PAYMENT_LABELS, PAYMENT_METHODS, type PaymentMethod } from "../services/transactions.js";
 import type { InlineButton } from "./api.js";
-import { bar, brl, dt, dtFull, esc, signed } from "./format.js";
+import { TelegramError } from "./api.js";
+import { findPossibleDuplicate } from "./data.js";
+import { brl, dtFull, esc } from "./format.js";
 import { consumeLinkCode, unlinkTelegram, userByTelegramId } from "./linking.js";
-import { parseMessage, type CategoryLite, type Draft, type Intent, type QueryIntent } from "./parser.js";
+import { interpret, monthPeriod, parseAmountReply, type Intent, type NluContext, type Query } from "./nlu.js";
+import type { Draft } from "./parser.js";
+import { parseDateText } from "./parser.js";
+import { buildReply, dateLabel, REPORT_MENU, reportQuery } from "./replies.js";
+import {
+  cancelAllPending, cancelPending, clearConversation, confirmPending, createPending, getConversation, getPending, pendingProblem,
+  setConversation, setPendingMessage, updatePending, type ConvState, type Pending, type PendingPayload,
+} from "./state.js";
 
-// ----- Tipos mínimos da Bot API que usamos -----
+// ----- Tipos mínimos da Bot API -----
 export interface TgUser {
   id: number;
   is_bot?: boolean;
@@ -50,30 +57,55 @@ export interface TgUpdate {
   callback_query?: TgCallbackQuery;
 }
 
-const PENDING_TTL_MIN = 15;
+/** Falha de infraestrutura: o update pode ser reprocessado (o Telegram reenvia). */
+export class RetryableError extends Error {}
 
+const MAX_ATTEMPTS = 3;
 type User = AuthUser & { chatId: number };
+
+// =========================== entrada (idempotente) ===========================
 
 export async function handleUpdate(ctx: AppContext, update: TgUpdate): Promise<void> {
   if (!ctx.telegram || typeof update?.update_id !== "number") return;
-  const fresh = await ctx.db.query("INSERT INTO telegram_updates (update_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING update_id", [update.update_id]);
-  if (!fresh.rows.length) {
-    ctx.log.info("telegram.update_duplicado", { update_id: update.update_id });
+  const op = `tg-${update.update_id}`;
+  const started = Date.now();
+  // Reserva o update. Repetições de um update já concluído (ou em andamento) são ignoradas;
+  // um update que falhou pode ser tentado de novo até MAX_ATTEMPTS.
+  const claim = await ctx.db.query<{ attempts: number }>(
+    `INSERT INTO telegram_updates (update_id, status, attempts) VALUES ($1, 'processing', 1)
+     ON CONFLICT (update_id) DO UPDATE SET status = 'processing', attempts = telegram_updates.attempts + 1
+       WHERE telegram_updates.status = 'failed' AND telegram_updates.attempts < $2
+     RETURNING attempts`,
+    [update.update_id, MAX_ATTEMPTS],
+  );
+  if (!claim.rows.length) {
+    ctx.log.info("telegram.update_duplicado", { op });
     return;
   }
+  const attempt = claim.rows[0].attempts;
   try {
-    if (update.message) await onMessage(ctx, update.message);
-    else if (update.callback_query) await onCallback(ctx, update.callback_query);
+    if (update.message) await onMessage(ctx, update.message, op);
+    else if (update.callback_query) await onCallback(ctx, update.callback_query, op);
+    await ctx.db.query("UPDATE telegram_updates SET status = 'done' WHERE update_id = $1", [update.update_id]);
+    ctx.log.info("telegram.update_ok", { op, ms: Date.now() - started });
   } catch (err) {
-    ctx.log.error("telegram.erro_update", { update_id: update.update_id, err: (err as Error).message });
+    const msg = (err as Error).message;
+    ctx.log.error("telegram.update_erro", { op, attempt, err: msg.slice(0, 200) });
+    await ctx.db.query("UPDATE telegram_updates SET status = 'failed' WHERE update_id = $1", [update.update_id]).catch(() => {});
+    if (attempt < MAX_ATTEMPTS) throw new RetryableError(msg);
+    // última tentativa: avisa o usuário sem afirmar que algo foi concluído
     const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id;
-    if (chatId) await ctx.telegram.sendMessage(chatId, "Tive um problema para processar isso agora. Tente de novo em instantes.").catch(() => {});
+    if (chatId && update.message?.chat.type !== "group" && update.message?.chat.type !== "supergroup") {
+      await ctx.telegram
+        .sendMessage(chatId, "⚠️ Tive um problema técnico e não consegui concluir esta mensagem. Antes de tentar de novo, confira /despesas para não lançar em duplicidade.")
+        .catch(() => {});
+    }
   }
 }
 
-// ======================= Mensagens =======================
+// =========================== mensagens ===========================
 
-async function onMessage(ctx: AppContext, msg: TgMessage) {
+async function onMessage(ctx: AppContext, msg: TgMessage, op: string) {
   const tg = ctx.telegram!;
   if (!msg.from || msg.from.is_bot) return;
   if (msg.chat.type !== "private") {
@@ -82,63 +114,84 @@ async function onMessage(ctx: AppContext, msg: TgMessage) {
   }
   const text = (msg.text ?? "").trim();
   if (!text) {
-    await tg.sendMessage(msg.chat.id, "Por enquanto eu entendo só mensagens de texto. 🙂");
+    await tg.sendMessage(msg.chat.id, "Por enquanto eu entendo apenas mensagens de texto. 🙂");
+    return;
+  }
+  if (text.length > 1000) {
+    await tg.sendMessage(msg.chat.id, "Mensagem muito longa. Envie uma frase curta, como <i>gastei 45 no almoço</i>.");
     return;
   }
   const [rawCmd, ...rest] = text.split(/\s+/);
   const cmd = rawCmd.startsWith("/") ? rawCmd.slice(1).split("@")[0].toLowerCase() : null;
   const arg = rest.join(" ");
 
-  // vinculação funciona antes de estar vinculado
   if (cmd === "start" && arg.toLowerCase().startsWith("link_")) return doLink(ctx, msg, arg);
   if (cmd === "vincular") return doLink(ctx, msg, arg);
 
   const user = await userByTelegramId(ctx.db, msg.from.id);
-  if (!user) {
+  if (!user || user.chatId !== msg.chat.id) {
     await tg.sendMessage(
       msg.chat.id,
-      "Olá! Eu sou o assistente do <b>Luna Finance</b>.\n\n" +
-        "Para começar, conecte sua conta:\n" +
-        "1. Entre no site do Luna Finance\n" +
-        "2. Vá em <b>Configurações → Telegram</b> e toque em <b>Conectar</b>\n" +
-        "3. Abra o link gerado ou me envie <code>/vincular CÓDIGO</code>\n\n" +
-        "Sem esse código eu não mostro nenhuma informação.",
+      "Olá! Eu sou o assistente do <b>Luna Finance</b>.\n\nPara começar, conecte sua conta:\n" +
+        "1. Entre no site do Luna Finance\n2. Abra <b>Configurações → Telegram</b> e toque em <b>Conectar</b>\n" +
+        "3. Abra o link gerado ou me envie <code>/vincular CÓDIGO</code>\n\nSem esse código eu não mostro nenhuma informação.",
     );
     return;
   }
+  ctx.log.info("telegram.mensagem", { op, user_id: user.id, cmd: cmd ?? "texto" });
 
+  if (cmd) {
+    // qualquer comando encerra uma pergunta em andamento
+    await clearConversation(ctx.db, user.id);
+    return runCommand(ctx, user, cmd);
+  }
+  const state = await getConversation(ctx.db, user.id);
+  if (state && (await handleConversationReply(ctx, user, state, text))) return;
+  return handleFreeText(ctx, user, text);
+}
+
+async function runCommand(ctx: AppContext, user: User, cmd: string) {
+  const tg = ctx.telegram!;
   switch (cmd) {
     case "start":
     case "ajuda":
     case "help":
       return sendHelp(ctx, user);
     case "saldo":
-      return answerQuery(ctx, user, "balance");
-    case "familia":
-      return answerQuery(ctx, user, "family");
-    case "receitas":
-      return answerQuery(ctx, user, "income");
+      return answer(ctx, user, { q: "balance" });
+    case "resumo":
+    case "relatorio":
+    case "relatorios":
+      return answer(ctx, user, { q: "summary", period: monthPeriod(today().slice(0, 7)) });
     case "despesas":
-      return answerQuery(ctx, user, "expenses");
+      return answer(ctx, user, { q: "last", kind: "expense", limit: 10 });
+    case "receitas":
+      return answer(ctx, user, { q: "last", kind: "income", limit: 10 });
+    case "metas":
+      return answer(ctx, user, { q: "goals" });
     case "contas":
     case "pendentes":
-      return answerQuery(ctx, user, "bills");
+      return answer(ctx, user, { q: "bills" });
     case "vencimentos":
-      return answerQuery(ctx, user, "upcoming");
-    case "metas":
-      return answerQuery(ctx, user, "goals");
-    case "resumo":
-      return answerQuery(ctx, user, "summary");
-    case "notificacoes":
-      return sendNotificationSettings(ctx, user);
-    case "desvincular":
-      await unlinkTelegram(ctx.db, user.id, "telegram");
-      await tg.sendMessage(msg.chat.id, "Pronto, este Telegram foi desconectado da sua conta. Para voltar, gere um novo código no site.");
+      return answer(ctx, user, { q: "upcoming" });
+    case "familia":
+      return answer(ctx, user, { q: "family" });
+    case "cancelar": {
+      const n = await cancelAllPending(ctx.db, user.id);
+      await tg.sendMessage(user.chatId, n ? `Ok, cancelei ${n === 1 ? "a operação em andamento" : `${n} operações em andamento`}. Nada foi registrado.` : "Não havia nenhuma operação em andamento.");
       return;
-    case null:
-      return handleFreeText(ctx, user, text);
+    }
+    case "configuracoes":
+    case "config":
+    case "notificacoes":
+      return sendSettings(ctx, user);
+    case "desvincular":
+      await tg.sendMessage(user.chatId, "Desconectar este Telegram da sua conta do Luna Finance?", {
+        reply_markup: { inline_keyboard: [[{ text: "Sim, desconectar", callback_data: "u:yes" }, { text: "Não", callback_data: "x:none" }]] },
+      });
+      return;
     default:
-      await tg.sendMessage(msg.chat.id, "Não conheço esse comando. Envie /ajuda para ver o que eu sei fazer.");
+      await tg.sendMessage(user.chatId, "Não conheço esse comando. Envie /ajuda para ver o que eu sei fazer.");
   }
 }
 
@@ -161,128 +214,419 @@ async function doLink(ctx: AppContext, msg: TgMessage, code: string) {
   ctx.log.info("telegram.vinculado", { user_id: r.userId });
   await tg.sendMessage(
     msg.chat.id,
-    `Tudo certo, ${esc(r.name.split(" ")[0])}! Sua conta está conectada. ✅\n\nExperimente:\n• <i>Gastei R$ 45 no mercado</i>\n• <i>Recebi 3.000 de salário</i>\n• /resumo`,
+    `Tudo certo, ${esc(r.name.split(" ")[0])}! Sua conta está conectada. ✅\n\nExperimente:\n• <i>Gastei 45 reais no almoço</i>\n• <i>Recebi 2.500 de salário</i>\n• <i>Quanto gastei este mês?</i>\n• /ajuda`,
   );
 }
 
 async function sendHelp(ctx: AppContext, user: User) {
   await ctx.telegram!.sendMessage(
     user.chatId,
-    `Oi, ${esc(user.name.split(" ")[0])}! Veja o que posso fazer:\n\n` +
+    `Oi, ${esc(user.name.split(" ")[0])}! Eu registro e consulto suas finanças no Luna Finance.\n\n` +
       "<b>Registrar</b> (sempre peço confirmação)\n" +
-      "• <i>Registra uma despesa de R$ 150 com supermercado</i>\n" +
-      "• <i>Recebi R$ 3.000 de salário</i>\n" +
-      "• <i>Conta de internet de R$ 120 para dia 20</i>\n" +
-      "• <i>Comprei um celular de 2.400 em 12x</i>\n\n" +
-      "<b>Consultar</b>\n" +
-      "/resumo · /saldo · /familia\n/receitas · /despesas · /contas\n/vencimentos · /metas\n\n" +
-      "<b>Preferências</b>\n/notificacoes · /desvincular",
+      "• <i>Gastei 45 reais no almoço</i>\n• <i>Paguei 250 de mercado no Pix</i>\n• <i>Recebi 2.500 de salário</i>\n" +
+      "• <i>Conta de internet de 120 para dia 20</i>\n• <i>Comprei um celular de 2.400 em 12x</i>\n\n" +
+      "<b>Perguntar</b>\n• <i>Quanto gastei este mês?</i>\n• <i>Quanto gastei com alimentação?</i>\n• <i>Compare meus gastos com o mês anterior</i>\n\n" +
+      "<b>Metas</b>\n• <i>Criar meta de 10 mil para viagem até 12/2027</i>\n• <i>Guardei 300 na meta viagem</i>\n\n" +
+      "<b>Comandos</b>\n/saldo · /resumo · /despesas · /receitas\n/metas · /contas · /vencimentos · /familia\n/cancelar · /configuracoes",
   );
 }
 
-async function categoriesLite(ctx: AppContext): Promise<CategoryLite[]> {
-  return (await listCategories(ctx.db)).map((c) => ({ id: c.id, name: c.name, kind: c.kind, keywords: c.keywords }));
+async function nluContext(ctx: AppContext, user: AuthUser): Promise<NluContext> {
+  const [cats, accounts, goals] = await Promise.all([listCategories(ctx.db), listAccounts(ctx.db, user, [user.id]), listGoals(ctx.db, user, {})]);
+  return {
+    categories: cats.map((c) => ({ id: c.id, name: c.name, kind: c.kind, keywords: c.keywords })),
+    accounts: accounts.map((a) => ({ id: a.id, name: a.name })),
+    goals: goals.filter((g) => g.scope === "family" || g.ownerId === user.id).map((g) => ({ id: g.id, name: g.name })),
+    today: today(),
+  };
 }
 
 async function handleFreeText(ctx: AppContext, user: User, text: string) {
-  const cats = await categoriesLite(ctx);
-  let intent: Intent = parseMessage(text, cats, today());
-  if ((intent.type === "unknown" || (intent.type === "incomplete" && intent.missing.includes("kind"))) && ctx.ai) {
-    const ai = await ctx.ai.interpret(text, cats, today());
-    if (ai && ai.type !== "unknown") intent = ai;
-  }
-  if (intent.type === "query") return answerQuery(ctx, user, intent.query);
-  if (intent.type === "entry") return proposeEntry(ctx, user, intent.draft);
-  if (intent.type === "incomplete") {
-    if (intent.missing.includes("amount")) {
-      await ctx.telegram!.sendMessage(user.chatId, "Não encontrei o valor. Pode mandar de novo com o valor? Ex.: <i>Gastei R$ 32,50 na farmácia</i>");
+  const nctx = await nluContext(ctx, user);
+  let intent: Intent = interpret(text, nctx);
+
+  // IA só entra quando as regras não resolveram (ou para explicações)
+  const wantsExplanation = /\b(por que|porque|explique|explica|analise|analisa|dica|padr[aã]o|tend[eê]ncia)\b/i.test(text);
+  if (ctx.ai && (intent.type === "unknown" || wantsExplanation || (intent.type === "incomplete" && intent.missing.includes("kind")))) {
+    const r = await ctx.ai.respond(text, { db: ctx.db, user, today: nctx.today, categories: nctx.categories, accounts: nctx.accounts, goals: nctx.goals });
+    if (r.type === "text") {
+      await ctx.telegram!.sendMessage(user.chatId, esc(r.text) + "\n\n<i>Resposta gerada com IA a partir dos seus dados.</i>");
       return;
     }
-    // valor ok, falta saber se é receita ou despesa
-    const draft: Draft = {
-      kind: "expense",
-      amountCents: intent.partial.amountCents!,
-      description: text.replace(/[\d.,]+/g, "").replace(/r\$/gi, "").trim().slice(0, 60) || "Lançamento",
-      categoryId: null,
-      date: today(),
-      status: "paid",
-      installments: null,
-      amountText: intent.partial.amountText ?? "",
-    };
-    const id = await savePending(ctx, user, { draft, needsKind: true });
-    await ctx.telegram!.sendMessage(user.chatId, `Entendi o valor de <b>${brl(draft.amountCents)}</b>. Isso é uma receita ou uma despesa?`, {
-      reply_markup: { inline_keyboard: [[{ text: "Despesa", callback_data: `t:${id}:expense` }, { text: "Receita", callback_data: `t:${id}:income` }], [{ text: "Cancelar", callback_data: `x:${id}` }]] },
-    });
-    return;
+    if (r.type === "proposal") intent = r.intent;
+  }
+
+  switch (intent.type) {
+    case "query":
+      return answer(ctx, user, intent.query);
+    case "entry":
+      return proposeEntry(ctx, user, intent.draft);
+    case "goal_create":
+      return startGoal(ctx, user, intent.name, intent.targetCents, intent.deadline);
+    case "goal_contribute":
+      return startContribution(ctx, user, intent.goalId, intent.amountCents, intent.withdraw, nctx);
+    case "incomplete": {
+      if (intent.missing.includes("amount")) {
+        const kind = intent.partial.kind;
+        if (kind) {
+          await setConversation(ctx.db, user.id, { step: "await_amount", draft: { ...intent.partial, kind } });
+          await ctx.telegram!.sendMessage(user.chatId, `Qual foi o valor${intent.partial.description ? ` de <b>${esc(intent.partial.description)}</b>` : ""}? (ex.: 45,90)`);
+          return;
+        }
+        break;
+      }
+      // tem valor, falta saber se é receita ou despesa
+      const draft: Draft = {
+        kind: "expense",
+        amountCents: intent.partial.amountCents!,
+        description: text.replace(/r\$\s*/gi, "").replace(/[\d.,]+/g, "").replace(/\s+/g, " ").trim().slice(0, 60) || "Lançamento",
+        categoryId: null,
+        date: intent.partial.date ?? today(),
+        status: intent.partial.status ?? "paid",
+        installments: null,
+        paymentMethod: intent.partial.paymentMethod ?? null,
+        accountId: intent.partial.accountId ?? null,
+        amountText: intent.partial.amountText ?? "",
+      };
+      const p = await createPending(ctx.db, user.id, user.chatId, { kind: "transaction", draft });
+      await ctx.telegram!.sendMessage(user.chatId, `Entendi o valor de <b>${brl(draft.amountCents)}</b>. É uma despesa ou uma receita?`, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "💸 Despesa", callback_data: `k:${p.id}:expense` }, { text: "💰 Receita", callback_data: `k:${p.id}:income` }],
+            [{ text: "Cancelar", callback_data: `x:${p.id}` }],
+          ],
+        },
+      });
+      return;
+    }
   }
   await ctx.telegram!.sendMessage(
     user.chatId,
-    "Não entendi. Você pode registrar algo como <i>Gastei R$ 50 no mercado</i> ou consultar com /resumo. Envie /ajuda para mais exemplos.",
+    "Não entendi. Você pode registrar algo como <i>Gastei 45 no almoço</i> ou perguntar <i>Quanto gastei este mês?</i>. Envie /ajuda para mais exemplos.",
   );
 }
 
-// ======================= Confirmação de lançamentos =======================
+/** Responde a uma pergunta que o bot fez antes. Retorna false se a mensagem não for uma resposta. */
+async function handleConversationReply(ctx: AppContext, user: User, state: ConvState, text: string): Promise<boolean> {
+  const tg = ctx.telegram!;
+  switch (state.step) {
+    case "await_amount": {
+      const cents = parseAmountReply(text);
+      if (!cents) {
+        // talvez seja uma nova frase completa — trata como nova mensagem
+        const nctx = await nluContext(ctx, user);
+        if (interpret(text, nctx).type !== "unknown") {
+          await clearConversation(ctx.db, user.id);
+          return false;
+        }
+        await tg.sendMessage(user.chatId, "Não entendi o valor. Envie só o número, por exemplo <b>45,90</b> — ou /cancelar.");
+        return true;
+      }
+      await clearConversation(ctx.db, user.id);
+      const d = state.draft;
+      await proposeEntry(ctx, user, {
+        kind: d.kind,
+        amountCents: cents,
+        description: d.description || (d.kind === "income" ? "Receita" : "Despesa"),
+        categoryId: d.categoryId ?? null,
+        date: d.date ?? today(),
+        status: d.status ?? "paid",
+        installments: d.installments ?? null,
+        paymentMethod: d.paymentMethod ?? null,
+        accountId: d.accountId ?? null,
+        amountText: text,
+      });
+      return true;
+    }
 
-interface PendingPayload {
-  draft: Draft;
-  needsKind?: boolean;
-  /** pagamento de conta já existente */
-  payTransactionId?: number;
+    case "edit_field": {
+      const p = await getPending(ctx.db, state.pendingId);
+      const problem = pendingProblem(p, user.id);
+      if (problem) {
+        await clearConversation(ctx.db, user.id);
+        await tg.sendMessage(user.chatId, problem);
+        return true;
+      }
+      const payload = p!.payload;
+      const err = applyTextEdit(payload, state.field, text);
+      if (err) {
+        await tg.sendMessage(user.chatId, `${err} Tente de novo ou envie /cancelar.`);
+        return true;
+      }
+      await clearConversation(ctx.db, user.id);
+      await refreshCard(ctx, user, p!, payload);
+      return true;
+    }
+
+    case "goal_name": {
+      const name = text.trim().slice(0, 60);
+      if (name.length < 2) {
+        await tg.sendMessage(user.chatId, "Qual o nome da meta? (ex.: Viagem de férias)");
+        return true;
+      }
+      await setConversation(ctx.db, user.id, { step: "goal_amount", name });
+      await tg.sendMessage(user.chatId, `Quanto você quer juntar para <b>${esc(name)}</b>? (ex.: 10.000)`);
+      return true;
+    }
+
+    case "goal_amount": {
+      const cents = parseAmountReply(text);
+      if (!cents) {
+        await tg.sendMessage(user.chatId, "Não entendi o valor. Envie só o número, por exemplo <b>10.000</b>.");
+        return true;
+      }
+      await setConversation(ctx.db, user.id, { step: "goal_deadline", name: state.name, targetCents: cents });
+      await tg.sendMessage(user.chatId, "Tem um prazo? Envie no formato <b>12/2027</b> ou <b>31/12/2027</b>.", {
+        reply_markup: { inline_keyboard: [[{ text: "Sem prazo", callback_data: "gd:none" }]] },
+      });
+      return true;
+    }
+
+    case "goal_deadline": {
+      const deadline = parseDeadline(text);
+      if (deadline === undefined) {
+        await tg.sendMessage(user.chatId, "Não entendi a data. Use <b>12/2027</b> ou <b>31/12/2027</b>, ou toque em “Sem prazo”.", {
+          reply_markup: { inline_keyboard: [[{ text: "Sem prazo", callback_data: "gd:none" }]] },
+        });
+        return true;
+      }
+      await clearConversation(ctx.db, user.id);
+      await proposeGoal(ctx, user, { name: state.name, targetCents: state.targetCents, deadline, scope: "individual" });
+      return true;
+    }
+
+    case "contrib_amount": {
+      const cents = parseAmountReply(text);
+      if (!cents) {
+        await tg.sendMessage(user.chatId, "Não entendi o valor. Envie só o número, por exemplo <b>300</b>.");
+        return true;
+      }
+      await clearConversation(ctx.db, user.id);
+      await proposeContribution(ctx, user, { goalId: state.goalId, goalName: state.goalName, amountCents: state.withdraw ? -cents : cents });
+      return true;
+    }
+  }
+  return false;
 }
 
-async function savePending(ctx: AppContext, user: User, payload: PendingPayload): Promise<string> {
-  const id = randomBytes(9).toString("base64url");
-  await ctx.db.query(
-    `INSERT INTO telegram_pending_actions (id, user_id, chat_id, payload, expires_at) VALUES ($1,$2,$3,$4,$5)`,
-    [id, user.id, user.chatId, JSON.stringify(payload), new Date(now().getTime() + PENDING_TTL_MIN * 60000)],
-  );
-  return id;
+/** "12/2027" → último dia do mês; "31/12/2027" → data; texto vazio/sem → null; inválido → undefined */
+function parseDeadline(text: string): string | null | undefined {
+  const t = text.trim().toLowerCase();
+  if (/^(sem( prazo)?|nao|não|-)$/.test(t)) return null;
+  const my = t.match(/^(\d{1,2})\/(\d{4})$/);
+  if (my) {
+    const ym = `${my[2]}-${my[1].padStart(2, "0")}`;
+    if (Number(my[1]) < 1 || Number(my[1]) > 12) return undefined;
+    const end = monthRange(ym).end;
+    return end > today() ? end : undefined;
+  }
+  const d = parseDateText(t, today());
+  return d && d > today() ? d : undefined;
 }
 
-async function draftText(ctx: AppContext, d: Draft) {
+// =========================== cartões de confirmação ===========================
+
+async function draftCard(ctx: AppContext, user: AuthUser, d: Draft): Promise<string> {
   const cats = await listCategories(ctx.db, true);
   const cat = cats.find((c) => c.id === d.categoryId);
-  const inst = d.installments ? `\n<b>Parcelas:</b> ${d.installments}x de ~${brl(Math.round(d.amountCents / d.installments))}` : "";
+  const accounts = await listAccounts(ctx.db, user, [user.id]);
+  const account = accounts.find((a) => a.id === d.accountId) ?? accounts.find((a) => a.isDefault) ?? accounts[0];
+  const dup = await findPossibleDuplicate(ctx.db, user.id, d.kind, d.amountCents, d.date);
+  const head = d.kind === "income" ? `💰 <b>Receita: ${brl(d.amountCents)}</b>` : `💸 <b>${d.status === "pending" ? "Conta a pagar" : "Despesa"}: ${brl(d.amountCents)}</b>`;
+  const lines = [
+    "Entendi! Confira a movimentação:\n",
+    head,
+    d.installments ? `🔢 Parcelas: ${d.installments}x de ~${brl(Math.round(d.amountCents / d.installments))}` : null,
+    `📝 Descrição: ${esc(d.description)}`,
+    `📂 Categoria: ${esc(cat?.name ?? "Sem categoria")}`,
+    `📅 ${d.status === "pending" ? "Vencimento" : "Data"}: ${dateLabel(d.date)}`,
+    d.paymentMethod ? `💳 Pagamento: ${PAYMENT_LABELS[d.paymentMethod]}` : null,
+    accounts.length > 1 || d.accountId ? `🏦 Conta: ${esc(account?.name ?? "Conta principal")}` : null,
+    `📌 Situação: ${d.status === "pending" ? (d.kind === "income" ? "A receber" : "A pagar") : d.kind === "income" ? "Recebido" : "Pago"}`,
+    dup ? `\n⚠️ <b>Possível duplicidade:</b> já existe “${esc(dup.description)}” de ${brl(d.amountCents)} em ${dtFull(dup.date)}${dup.source === "telegram" ? " (registrado pelo Telegram)" : ""}. Confirme só se for outro lançamento.` : null,
+    "\nDeseja confirmar?",
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
+function goalCard(g: { name: string; targetCents: number; deadline: string | null; scope: string }) {
   return (
-    `<b>${d.kind === "income" ? "Nova receita" : d.status === "pending" ? "Nova conta a pagar" : "Nova despesa"}</b>\n\n` +
-    `<b>Valor:</b> ${brl(d.amountCents)}${inst}\n` +
-    `<b>Descrição:</b> ${esc(d.description)}\n` +
-    `<b>Categoria:</b> ${esc(cat?.name ?? "Sem categoria")}\n` +
-    `<b>${d.status === "pending" ? "Vencimento" : "Data"}:</b> ${dtFull(d.date)}\n` +
-    `<b>Situação:</b> ${d.status === "pending" ? "Pendente" : d.kind === "income" ? "Recebido" : "Pago"}\n\n` +
-    "Está correto?"
+    "🎯 <b>Nova meta</b>\n\n" +
+    `Nome: ${esc(g.name)}\nValor: <b>${brl(g.targetCents)}</b>\nPrazo: ${g.deadline ? dtFull(g.deadline) : "sem prazo"}\n` +
+    `Tipo: ${g.scope === "family" ? "da família (todos podem contribuir)" : "individual"}\n\nDeseja criar?`
   );
 }
 
-function confirmKeyboard(id: string, d: Draft): InlineButton[][] {
-  return [
-    [{ text: "✅ Confirmar", callback_data: `c:${id}` }, { text: "Cancelar", callback_data: `x:${id}` }],
-    [
-      { text: "Trocar categoria", callback_data: `k:${id}` },
-      { text: d.status === "pending" ? "Marcar como pago" : "Marcar pendente", callback_data: `s:${id}` },
-    ],
-  ];
+async function contributionCard(ctx: AppContext, user: AuthUser, c: { goalId: number; goalName: string; amountCents: number }) {
+  const goal = (await listGoals(ctx.db, user, {})).find((g) => g.id === c.goalId);
+  const after = goal ? goal.savedCents + c.amountCents : null;
+  return (
+    `🎯 <b>${c.amountCents < 0 ? "Retirada da meta" : "Guardar na meta"}</b>\n\n` +
+    `Meta: ${esc(c.goalName)}\nValor: <b>${brl(Math.abs(c.amountCents))}</b>\n` +
+    (goal && after !== null ? `Depois disso: ${brl(after)} de ${brl(goal.targetCents)} (${Math.min(100, Math.round((after / goal.targetCents) * 100))}%)\n` : "") +
+    "\nDeseja confirmar?"
+  );
+}
+
+function cardKeyboard(p: { id: string; version: number }): InlineButton[][] {
+  return [[
+    { text: "✅ Confirmar", callback_data: `c:${p.id}:${p.version}` },
+    { text: "✏️ Editar", callback_data: `e:${p.id}` },
+    { text: "✖️ Cancelar", callback_data: `x:${p.id}` },
+  ]];
+}
+
+async function cardText(ctx: AppContext, user: AuthUser, payload: PendingPayload) {
+  if (payload.kind === "transaction") return draftCard(ctx, user, payload.draft);
+  if (payload.kind === "goal") return goalCard(payload.goal);
+  return contributionCard(ctx, user, payload.contribution);
+}
+
+async function sendCard(ctx: AppContext, user: User, payload: PendingPayload) {
+  const p = await createPending(ctx.db, user.id, user.chatId, payload);
+  const sent = await ctx.telegram!.sendMessage(user.chatId, await cardText(ctx, user, payload), { reply_markup: { inline_keyboard: cardKeyboard(p) } });
+  if (sent) await setPendingMessage(ctx.db, p.id, payload, sent.message_id);
 }
 
 async function proposeEntry(ctx: AppContext, user: User, draft: Draft) {
-  const id = await savePending(ctx, user, { draft });
-  await ctx.telegram!.sendMessage(user.chatId, await draftText(ctx, draft), { reply_markup: { inline_keyboard: confirmKeyboard(id, draft) } });
+  await sendCard(ctx, user, { kind: "transaction", draft });
 }
 
-async function loadPending(ctx: AppContext, id: string, userId: number) {
-  const { rows } = await ctx.db.query<{ id: string; user_id: number; payload: PendingPayload; status: string; expires_at: Date }>(
-    "SELECT id, user_id, payload, status, expires_at FROM telegram_pending_actions WHERE id = $1",
-    [id],
-  );
-  const p = rows[0];
-  if (!p || p.user_id !== userId) return { error: "Esta ação não está mais disponível." } as const;
-  if (p.status !== "pending") return { error: p.status === "confirmed" ? "Isso já foi registrado. ✅" : "Esta ação foi cancelada." } as const;
-  if (p.expires_at < now()) return { error: "Esta confirmação expirou. Envie a mensagem de novo." } as const;
-  const payload = typeof p.payload === "string" ? (JSON.parse(p.payload) as PendingPayload) : p.payload;
-  return { pending: { ...p, payload } } as const;
+async function proposeGoal(ctx: AppContext, user: User, goal: { name: string; targetCents: number; deadline: string | null; scope: "individual" | "family" }) {
+  await sendCard(ctx, user, { kind: "goal", goal });
 }
 
-async function onCallback(ctx: AppContext, cb: TgCallbackQuery) {
+async function proposeContribution(ctx: AppContext, user: User, c: { goalId: number; goalName: string; amountCents: number }) {
+  await sendCard(ctx, user, { kind: "contribution", contribution: c });
+}
+
+async function startGoal(ctx: AppContext, user: User, name: string, targetCents: number | null, deadline: string | null) {
+  if (!name) {
+    await setConversation(ctx.db, user.id, { step: "goal_name" });
+    await ctx.telegram!.sendMessage(user.chatId, "Vamos criar uma meta! Qual o nome dela? (ex.: Viagem de férias)");
+    return;
+  }
+  if (!targetCents) {
+    await setConversation(ctx.db, user.id, { step: "goal_amount", name });
+    await ctx.telegram!.sendMessage(user.chatId, `Quanto você quer juntar para <b>${esc(name)}</b>?`);
+    return;
+  }
+  await proposeGoal(ctx, user, { name, targetCents, deadline, scope: "individual" });
+}
+
+async function startContribution(ctx: AppContext, user: User, goalId: number | null, amountCents: number | null, withdraw: boolean, nctx?: NluContext) {
+  const goals = (nctx ?? (await nluContext(ctx, user))).goals;
+  if (!goalId) {
+    if (!goals.length) {
+      await ctx.telegram!.sendMessage(user.chatId, "Você ainda não tem metas. Envie <i>criar meta de 5 mil para viagem</i> para começar.");
+      return;
+    }
+    await ctx.telegram!.sendMessage(user.chatId, "Em qual meta?", {
+      reply_markup: { inline_keyboard: goals.slice(0, 8).map((g) => [{ text: g.name.slice(0, 40), callback_data: `gc:${g.id}` }]) },
+    });
+    return;
+  }
+  const goal = goals.find((g) => g.id === goalId);
+  if (!goal) {
+    await ctx.telegram!.sendMessage(user.chatId, "Não encontrei essa meta entre as suas.");
+    return;
+  }
+  if (!amountCents) {
+    await setConversation(ctx.db, user.id, { step: "contrib_amount", goalId, goalName: goal.name, withdraw });
+    await ctx.telegram!.sendMessage(user.chatId, `Quanto você quer ${withdraw ? "retirar de" : "guardar em"} <b>${esc(goal.name)}</b>?`);
+    return;
+  }
+  await proposeContribution(ctx, user, { goalId, goalName: goal.name, amountCents: withdraw ? -amountCents : amountCents });
+}
+
+/** Aplica edição digitada. Retorna mensagem de erro ou null. */
+function applyTextEdit(payload: PendingPayload, field: string, text: string): string | null {
+  if (payload.kind === "transaction") {
+    const d = payload.draft;
+    if (field === "amount") {
+      const c = parseAmountReply(text);
+      if (!c) return "Valor inválido.";
+      d.amountCents = c;
+      d.amountText = text;
+    } else if (field === "description") {
+      const v = text.trim();
+      if (!v || v.length > 160) return "A descrição precisa ter entre 1 e 160 caracteres.";
+      d.description = v;
+    } else if (field === "date") {
+      const v = parseDateText(text, today());
+      if (!v) return "Data inválida. Use <b>hoje</b>, <b>ontem</b> ou <b>dd/mm/aaaa</b>.";
+      d.date = v;
+      if (v > today()) d.status = "pending";
+    }
+    return null;
+  }
+  if (payload.kind === "goal") {
+    if (field === "name") {
+      const v = text.trim();
+      if (v.length < 2 || v.length > 60) return "O nome precisa ter entre 2 e 60 caracteres.";
+      payload.goal.name = v;
+    } else if (field === "target") {
+      const c = parseAmountReply(text);
+      if (!c) return "Valor inválido.";
+      payload.goal.targetCents = c;
+    }
+    return null;
+  }
+  if (field === "amount") {
+    const c = parseAmountReply(text);
+    if (!c) return "Valor inválido.";
+    payload.contribution.amountCents = payload.contribution.amountCents < 0 ? -c : c;
+  }
+  return null;
+}
+
+/** Salva a edição (nova versão) e reenvia o cartão; o cartão antigo deixa de valer. */
+async function refreshCard(ctx: AppContext, user: User, p: Pending, payload: PendingPayload, messageId?: number) {
+  const version = await updatePending(ctx.db, p.id, payload);
+  if (!version) {
+    await ctx.telegram!.sendMessage(user.chatId, "Esta operação não está mais disponível.");
+    return;
+  }
+  const text = await cardText(ctx, user, payload);
+  const kb = { inline_keyboard: cardKeyboard({ id: p.id, version }) };
+  if (messageId) {
+    await ctx.telegram!.editMessageText(user.chatId, messageId, text, { reply_markup: kb });
+    return;
+  }
+  // edição digitada: cartão novo embaixo; o antigo é marcado como substituído
+  if (payload.messageId) await ctx.telegram!.editMessageText(user.chatId, payload.messageId, "✏️ Resumo atualizado — veja abaixo.").catch(() => {});
+  const sent = await ctx.telegram!.sendMessage(user.chatId, text, { reply_markup: kb });
+  if (sent) await setPendingMessage(ctx.db, p.id, payload, sent.message_id);
+}
+
+function editMenu(p: Pending): InlineButton[][] {
+  const id = p.id;
+  if (p.payload.kind === "transaction") {
+    const d = p.payload.draft;
+    return [
+      [{ text: "💲 Valor", callback_data: `f:${id}:amount` }, { text: "📝 Descrição", callback_data: `f:${id}:description` }],
+      [{ text: "📅 Data", callback_data: `f:${id}:date` }, { text: "📂 Categoria", callback_data: `f:${id}:category` }],
+      [{ text: "💳 Pagamento", callback_data: `f:${id}:payment` }, { text: "🏦 Conta", callback_data: `f:${id}:account` }],
+      [
+        { text: d.kind === "income" ? "↔️ É despesa" : "↔️ É receita", callback_data: `s:${id}:kind:${d.kind === "income" ? "expense" : "income"}` },
+        { text: d.status === "pending" ? "📌 Já foi pago" : "📌 Ainda a pagar", callback_data: `s:${id}:status:${d.status === "pending" ? "paid" : "pending"}` },
+      ],
+      [{ text: "⬅️ Voltar", callback_data: `b:${id}` }],
+    ];
+  }
+  if (p.payload.kind === "goal") {
+    return [
+      [{ text: "📝 Nome", callback_data: `f:${id}:name` }, { text: "💲 Valor", callback_data: `f:${id}:target` }],
+      [{ text: p.payload.goal.scope === "family" ? "👤 Tornar individual" : "👨‍👩‍👦‍👦 Tornar da família", callback_data: `s:${id}:scope:${p.payload.goal.scope === "family" ? "individual" : "family"}` }],
+      [{ text: "⬅️ Voltar", callback_data: `b:${id}` }],
+    ];
+  }
+  return [[{ text: "💲 Valor", callback_data: `f:${id}:amount` }], [{ text: "⬅️ Voltar", callback_data: `b:${id}` }]];
+}
+
+// =========================== botões ===========================
+
+async function onCallback(ctx: AppContext, cb: TgCallbackQuery, op: string) {
   const tg = ctx.telegram!;
   const user = await userByTelegramId(ctx.db, cb.from.id);
   const chatId = cb.message?.chat.id;
@@ -291,127 +635,222 @@ async function onCallback(ctx: AppContext, cb: TgCallbackQuery) {
     await tg.answerCallbackQuery(cb.id, "Conecte sua conta para usar este botão.");
     return;
   }
-  const [action, id, extra] = (cb.data ?? "").split(":");
+  const parts = (cb.data ?? "").split(":");
+  const [action, id] = parts;
+  ctx.log.info("telegram.botao", { op, user_id: user.id, action });
 
-  // preferências de notificação
-  if (action === "n") return toggleNotification(ctx, user, cb, id, messageId);
-  // pagar conta existente: p = pedir confirmação, pc = confirmar
-  if (action === "p" || action === "pc") return payBill(ctx, user, cb, Number(id), action === "pc", messageId);
-
+  // ---- ações sem rascunho ----
   if (action === "x" && id === "none") {
     await tg.editMessageText(chatId, messageId, "Ok, nada foi alterado.");
+    return tg.answerCallbackQuery(cb.id);
+  }
+  if (action === "u" && id === "ask") {
+    await tg.sendMessage(user.chatId, "Desconectar este Telegram da sua conta do Luna Finance?", {
+      reply_markup: { inline_keyboard: [[{ text: "Sim, desconectar", callback_data: "u:yes" }, { text: "Não", callback_data: "x:none" }]] },
+    });
+    return tg.answerCallbackQuery(cb.id);
+  }
+  if (action === "u" && id === "yes") {
+    await unlinkTelegram(ctx.db, user.id, "telegram");
+    await tg.editMessageText(chatId, messageId, "Pronto, este Telegram foi desconectado. Para voltar, gere um novo código no site.");
+    return tg.answerCallbackQuery(cb.id);
+  }
+  if (action === "n") return toggleNotification(ctx, user, cb, id, messageId);
+  if (action === "p" || action === "pc") return payBill(ctx, user, cb, Number(id), action === "pc", messageId);
+  if (action === "r") {
+    const q = reportQuery(id);
     await tg.answerCallbackQuery(cb.id);
+    if (q) await answer(ctx, user, q);
     return;
   }
-
-  const loaded = await loadPending(ctx, id, user.id);
-  if ("error" in loaded) {
-    await tg.answerCallbackQuery(cb.id, loaded.error);
-    return;
-  }
-  const { payload } = loaded.pending;
-  const draft = payload.draft;
-
-  if (action === "x") {
-    await ctx.db.query("UPDATE telegram_pending_actions SET status = 'cancelled' WHERE id = $1 AND status = 'pending'", [id]);
-    await tg.editMessageText(chatId, messageId, "Cancelado. Nada foi registrado.");
+  if (action === "g") {
     await tg.answerCallbackQuery(cb.id);
-    return;
+    return answer(ctx, user, { q: "goal", goalId: Number(id) });
   }
-
-  if (action === "t" && (extra === "income" || extra === "expense")) {
-    draft.kind = extra;
-    const cats = await categoriesLite(ctx);
-    draft.categoryId = cats.find((c) => c.kind === extra && /^outr/i.test(c.name))?.id ?? null;
-    await updatePayload(ctx, id, { draft });
-    await tg.editMessageText(chatId, messageId, await draftText(ctx, draft), { reply_markup: { inline_keyboard: confirmKeyboard(id, draft) } });
+  if (action === "gc") {
     await tg.answerCallbackQuery(cb.id);
-    return;
+    return startContribution(ctx, user, Number(id), null, false);
   }
-
-  if (action === "s") {
-    draft.status = draft.status === "pending" ? "paid" : "pending";
-    if (draft.status === "paid" && draft.date > today()) draft.date = today();
-    await updatePayload(ctx, id, payload);
-    await tg.editMessageText(chatId, messageId, await draftText(ctx, draft), { reply_markup: { inline_keyboard: confirmKeyboard(id, draft) } });
+  if (action === "gn") {
     await tg.answerCallbackQuery(cb.id);
-    return;
+    return startGoal(ctx, user, "", null, null);
+  }
+  if (action === "gd") {
+    const state = await getConversation(ctx.db, user.id);
+    await tg.answerCallbackQuery(cb.id);
+    if (state?.step !== "goal_deadline") return;
+    await clearConversation(ctx.db, user.id);
+    return proposeGoal(ctx, user, { name: state.name, targetCents: state.targetCents, deadline: null, scope: "individual" });
   }
 
-  if (action === "k") {
-    // lista categorias do tipo, 2 por linha
-    const cats = (await categoriesLite(ctx)).filter((c) => c.kind === draft.kind);
-    const rows: InlineButton[][] = [];
-    for (let i = 0; i < cats.length; i += 2) {
-      rows.push(cats.slice(i, i + 2).map((c) => ({ text: c.name, callback_data: `g:${id}:${c.id}` })));
+  // ---- ações sobre um rascunho ----
+  const p = await getPending(ctx.db, id);
+  const version = action === "c" ? Number(parts[2]) : undefined;
+  const problem = pendingProblem(p, user.id, version);
+  if (problem) {
+    await tg.answerCallbackQuery(cb.id, problem);
+    return;
+  }
+  const pending = p!;
+  const payload = pending.payload;
+
+  switch (action) {
+    case "x": {
+      await cancelPending(ctx.db, pending.id, user.id);
+      await clearConversation(ctx.db, user.id);
+      await tg.editMessageText(chatId, messageId, "Cancelado. Nada foi registrado.");
+      return tg.answerCallbackQuery(cb.id);
     }
-    rows.push([{ text: "Voltar", callback_data: `b:${id}` }]);
-    await tg.editMessageText(chatId, messageId, "Escolha a categoria:", { reply_markup: { inline_keyboard: rows } });
-    await tg.answerCallbackQuery(cb.id);
-    return;
-  }
-
-  if (action === "g" || action === "b") {
-    if (action === "g") {
-      const cats = await categoriesLite(ctx);
-      const chosen = cats.find((c) => c.id === Number(extra) && c.kind === draft.kind);
-      if (chosen) draft.categoryId = chosen.id;
-      await updatePayload(ctx, id, payload);
-    }
-    await tg.editMessageText(chatId, messageId, await draftText(ctx, draft), { reply_markup: { inline_keyboard: confirmKeyboard(id, draft) } });
-    await tg.answerCallbackQuery(cb.id);
-    return;
-  }
-
-  if (action === "c") {
-    // trava atômica: só um clique consegue confirmar (evita duplicidade)
-    const lock = await ctx.db.query("UPDATE telegram_pending_actions SET status = 'confirmed' WHERE id = $1 AND status = 'pending' AND expires_at > $2 RETURNING id", [id, now()]);
-    if (!lock.rows.length) {
-      await tg.answerCallbackQuery(cb.id, "Isso já foi processado.");
-      return;
-    }
-    try {
-      const created = await createTransaction(
-        ctx.db,
-        user,
-        {
-          kind: draft.kind,
-          amountCents: draft.amountCents,
-          description: draft.description,
-          date: draft.date,
-          status: draft.status,
-          categoryId: draft.categoryId,
-          installments: draft.installments,
-        },
-        "telegram",
-      );
-      await ctx.db.query("UPDATE telegram_pending_actions SET result_id = $2 WHERE id = $1", [id, created[0].id]);
-      const extraInfo = created.length > 1 ? ` em ${created.length} parcelas` : "";
-      await tg.editMessageText(
-        chatId,
-        messageId,
-        `✅ Registrado${extraInfo}: <b>${esc(draft.description)}</b> — ${brl(draft.amountCents)} (${dtFull(draft.date)}).\nVocê pode editar pelo site a qualquer momento.`,
-      );
-      await tg.answerCallbackQuery(cb.id, "Registrado!");
-    } catch (err) {
-      // devolve para pendente para permitir nova tentativa
-      await ctx.db.query("UPDATE telegram_pending_actions SET status = 'pending' WHERE id = $1", [id]);
-      const msg = err instanceof HttpError ? err.message : "Não consegui registrar agora.";
-      await tg.answerCallbackQuery(cb.id, msg.slice(0, 190));
-      if (!(err instanceof HttpError)) throw err;
-    }
-    return;
+    case "e":
+      await tg.editMessageText(chatId, messageId, (await cardText(ctx, user, payload)).replace("\nDeseja confirmar?", "\nO que você quer alterar?").replace("\nDeseja criar?", "\nO que você quer alterar?"), {
+        reply_markup: { inline_keyboard: editMenu(pending) },
+      });
+      return tg.answerCallbackQuery(cb.id);
+    case "b":
+      await tg.editMessageText(chatId, messageId, await cardText(ctx, user, payload), { reply_markup: { inline_keyboard: cardKeyboard(pending) } });
+      return tg.answerCallbackQuery(cb.id);
+    case "f":
+      return editField(ctx, user, cb, pending, parts[2], messageId);
+    case "s":
+    case "k":
+      return setField(ctx, user, cb, pending, action === "k" ? "kind" : parts[2], action === "k" ? parts[2] : parts[3], messageId);
+    case "c":
+      return confirm(ctx, user, cb, pending, messageId, op);
   }
   await tg.answerCallbackQuery(cb.id);
 }
 
-async function updatePayload(ctx: AppContext, id: string, payload: PendingPayload) {
-  await ctx.db.query("UPDATE telegram_pending_actions SET payload = $2 WHERE id = $1 AND status = 'pending'", [id, JSON.stringify(payload)]);
+async function editField(ctx: AppContext, user: User, cb: TgCallbackQuery, p: Pending, field: string, messageId: number) {
+  const tg = ctx.telegram!;
+  const id = p.id;
+  const prompts: Record<string, string> = {
+    amount: "Envie o novo valor (ex.: 45,90).",
+    description: "Envie a nova descrição.",
+    date: "Envie a nova data: <b>hoje</b>, <b>ontem</b> ou <b>dd/mm/aaaa</b>.",
+    name: "Envie o novo nome da meta.",
+    target: "Envie o novo valor da meta.",
+  };
+  if (prompts[field]) {
+    await setConversation(ctx.db, user.id, { step: "edit_field", pendingId: id, field: field as "amount" });
+    await tg.answerCallbackQuery(cb.id);
+    await tg.sendMessage(user.chatId, prompts[field]);
+    return;
+  }
+  if (p.payload.kind !== "transaction") return tg.answerCallbackQuery(cb.id);
+  const d = p.payload.draft;
+  let rows: InlineButton[][] = [];
+  if (field === "category") {
+    const cats = (await listCategories(ctx.db)).filter((c) => c.kind === d.kind);
+    for (let i = 0; i < cats.length; i += 2) rows.push(cats.slice(i, i + 2).map((c) => ({ text: c.name, callback_data: `s:${id}:category:${c.id}` })));
+  } else if (field === "payment") {
+    const opts = PAYMENT_METHODS.map((m) => ({ text: PAYMENT_LABELS[m], callback_data: `s:${id}:payment:${m}` }));
+    for (let i = 0; i < opts.length; i += 2) rows.push(opts.slice(i, i + 2));
+    rows.push([{ text: "Não informar", callback_data: `s:${id}:payment:none` }]);
+  } else if (field === "account") {
+    const accs = await listAccounts(ctx.db, user, [user.id]);
+    rows = accs.map((a) => [{ text: a.name, callback_data: `s:${id}:account:${a.id}` }]);
+  }
+  rows.push([{ text: "⬅️ Voltar", callback_data: `e:${id}` }]);
+  await tg.editMessageText(user.chatId, messageId, field === "category" ? "Escolha a categoria:" : field === "payment" ? "Forma de pagamento:" : "Escolha a conta:", {
+    reply_markup: { inline_keyboard: rows },
+  });
+  await tg.answerCallbackQuery(cb.id);
+}
+
+async function setField(ctx: AppContext, user: User, cb: TgCallbackQuery, p: Pending, field: string, value: string, messageId: number) {
+  const payload = p.payload;
+  if (payload.kind === "goal" && field === "scope") {
+    if (value === "family" && user.family_access === "none") {
+      await ctx.telegram!.answerCallbackQuery(cb.id, "Sua conta não participa das metas da família.");
+      return;
+    }
+    payload.goal.scope = value === "family" ? "family" : "individual";
+  } else if (payload.kind === "transaction") {
+    const d = payload.draft;
+    if (field === "kind" && (value === "income" || value === "expense")) {
+      if (d.kind !== value) {
+        d.kind = value;
+        const cats = await listCategories(ctx.db);
+        d.categoryId = cats.find((c) => c.kind === value && /^outr/i.test(c.name))?.id ?? null;
+        if (value === "income") d.installments = null;
+      }
+    } else if (field === "status" && (value === "paid" || value === "pending")) {
+      d.status = value;
+      if (value === "paid" && d.date > today()) d.date = today();
+    } else if (field === "category") {
+      const c = (await listCategories(ctx.db)).find((x) => x.id === Number(value) && x.kind === d.kind);
+      if (c) d.categoryId = c.id;
+    } else if (field === "payment") {
+      d.paymentMethod = PAYMENT_METHODS.includes(value as PaymentMethod) ? (value as PaymentMethod) : null;
+    } else if (field === "account") {
+      const a = (await listAccounts(ctx.db, user, [user.id])).find((x) => x.id === Number(value));
+      if (a) d.accountId = a.id;
+    }
+  }
+  await refreshCard(ctx, user, p, payload, messageId);
+  await ctx.telegram!.answerCallbackQuery(cb.id);
+}
+
+async function confirm(ctx: AppContext, user: User, cb: TgCallbackQuery, p: Pending, messageId: number, op: string) {
+  const tg = ctx.telegram!;
+  let result;
+  try {
+    result = await confirmPending(ctx.db, p.id, user.id, p.version, async (q, locked) => {
+      const pl = locked.payload;
+      if (pl.kind === "transaction") {
+        const d = pl.draft;
+        const created = await createTransactionWith(
+          q,
+          user,
+          {
+            kind: d.kind, amountCents: d.amountCents, description: d.description, date: d.date, status: d.status,
+            categoryId: d.categoryId, installments: d.installments, paymentMethod: d.paymentMethod, accountId: d.accountId,
+          },
+          "telegram",
+        );
+        return {
+          resultId: created[0].id,
+          value: `✅ <b>Registrado no Luna Finance</b>\n${d.kind === "income" ? "Receita" : "Despesa"}: ${esc(d.description)} — <b>${brl(d.amountCents)}</b>` +
+            `${created.length > 1 ? ` em ${created.length} parcelas` : ""} (${dateLabel(d.date)}).\nJá aparece no site; você pode editar por lá.`,
+        };
+      }
+      if (pl.kind === "goal") {
+        const g = await createGoalWith(q, user, { name: pl.goal.name, targetCents: pl.goal.targetCents, deadline: pl.goal.deadline, scope: pl.goal.scope }, "telegram");
+        return { resultId: g.id, value: `✅ <b>Meta criada:</b> ${esc(g.name)} — ${brl(g.targetCents)}.\nEnvie <i>guardei 200 na meta ${esc(g.name.toLowerCase())}</i> para registrar contribuições.` };
+      }
+      const r = await contributeWith(q, user, pl.contribution.goalId, { amountCents: pl.contribution.amountCents }, "telegram");
+      return {
+        resultId: r.id,
+        value: `✅ <b>${pl.contribution.amountCents < 0 ? "Retirada registrada" : "Contribuição registrada"}</b> em ${esc(r.goal.name)}.\n` +
+          `Agora: ${brl(r.goal.savedCents)} de ${brl(r.goal.targetCents)} (${Math.round(r.goal.percent)}%)${r.goal.achievedAt ? " — meta atingida! 🎉" : ""}.`,
+      };
+    });
+  } catch (err) {
+    // NADA foi gravado (a transação do banco foi desfeita) e a ação segue pendente.
+    const userMsg = err instanceof HttpError ? err.message : "Não consegui registrar agora. Nada foi salvo — tente confirmar de novo.";
+    ctx.log.warn("telegram.confirmacao_falhou", { op, user_id: user.id, err: (err as Error).message.slice(0, 160) });
+    await tg.answerCallbackQuery(cb.id, userMsg.slice(0, 190)).catch(() => {});
+    if (!(err instanceof HttpError)) await tg.sendMessage(user.chatId, `⚠️ ${esc(userMsg)}`).catch(() => {});
+    return;
+  }
+  if (!result.ok) {
+    await tg.answerCallbackQuery(cb.id, result.reason);
+    return;
+  }
+  ctx.log.info("telegram.confirmado", { op, user_id: user.id, kind: p.kind });
+  // a gravação já foi confirmada pelo banco; agora sim avisamos
+  try {
+    await tg.editMessageText(user.chatId, messageId, result.value);
+  } catch (err) {
+    ctx.log.warn("telegram.aviso_pos_confirmacao_falhou", { op, err: (err as Error).message.slice(0, 120) });
+    await tg.sendMessage(user.chatId, result.value).catch(() => {});
+  }
+  await tg.answerCallbackQuery(cb.id, "Registrado!").catch(() => {});
 }
 
 async function payBill(ctx: AppContext, user: User, cb: TgCallbackQuery, txId: number, confirmed: boolean, messageId: number) {
   const tg = ctx.telegram!;
-  const [tx] = await getTransactions(ctx.db, [txId]);
+  const [tx] = Number.isInteger(txId) ? await getTransactions(ctx.db, [txId]) : [];
   if (!tx || tx.userId !== user.id) {
     await tg.answerCallbackQuery(cb.id, "Só quem é responsável pela conta pode marcá-la como paga.");
     return;
@@ -422,145 +861,25 @@ async function payBill(ctx: AppContext, user: User, cb: TgCallbackQuery, txId: n
   }
   if (!confirmed) {
     await tg.sendMessage(user.chatId, `Confirmar o pagamento de <b>${esc(tx.description)}</b> (${brl(tx.amountCents)}) hoje, ${dtFull(today())}?`, {
-      reply_markup: { inline_keyboard: [[{ text: "✅ Confirmar pagamento", callback_data: `pc:${tx.id}` }, { text: "Agora não", callback_data: `x:none` }]] },
+      reply_markup: { inline_keyboard: [[{ text: "✅ Confirmar pagamento", callback_data: `pc:${tx.id}` }, { text: "Agora não", callback_data: "x:none" }]] },
     });
     await tg.answerCallbackQuery(cb.id);
     return;
   }
+  // markPaid é idempotente: um segundo clique encontra a conta já paga (checado acima)
   await markPaid(ctx.db, user, tx.id, today(), "telegram");
   await tg.editMessageText(user.chatId, messageId, `✅ <b>${esc(tx.description)}</b> marcada como paga (${brl(tx.amountCents)}).`);
   await tg.answerCallbackQuery(cb.id, "Pagamento registrado!");
 }
 
-// ======================= Consultas =======================
+// =========================== consultas ===========================
 
-export async function answerQuery(ctx: AppContext, user: User, q: QueryIntent) {
-  const text = await buildQueryText(ctx, user, q);
-  const extras = q === "bills" || q === "upcoming" ? await payButtons(ctx, user, q) : undefined;
-  await ctx.telegram!.sendMessage(user.chatId, text, extras ? { reply_markup: { inline_keyboard: extras } } : {});
+export async function answer(ctx: AppContext, user: User, query: Query) {
+  const r = await buildReply(ctx.db, user, query);
+  await ctx.telegram!.sendMessage(user.chatId, r.text, r.keyboard?.length ? { reply_markup: { inline_keyboard: r.keyboard } } : {});
 }
 
-async function payButtons(ctx: AppContext, user: User, q: QueryIntent): Promise<InlineButton[][] | undefined> {
-  const t = today();
-  const { rows } = await ctx.db.query<{ id: number; description: string }>(
-    `SELECT id, description FROM transactions WHERE user_id = $1 AND kind='expense' AND status='pending' AND deleted_at IS NULL
-       AND date <= $2 ORDER BY date LIMIT 5`,
-    [user.id, q === "upcoming" ? addDays(t, 15) : addDays(t, 30)],
-  );
-  if (!rows.length) return undefined;
-  return rows.map((r) => [{ text: `Pagar: ${r.description.slice(0, 40)}`, callback_data: `p:${r.id}` }]);
-}
-
-function txLine(t: TransactionRow, today_: string) {
-  const late = t.date < today_ ? " ⚠️" : "";
-  return `• ${dt(t.date)} — ${esc(t.description)}: <b>${brl(t.amountCents)}</b>${late}`;
-}
-
-export async function buildQueryText(ctx: AppContext, user: AuthUser, q: QueryIntent): Promise<string> {
-  const db = ctx.db;
-  const ym = currentMonth();
-  const { start, end } = monthRange(ym);
-  const t = today();
-  const monthLabel = monthNamePt(ym);
-
-  if (q === "balance") {
-    const accounts = await listAccounts(db, user, [user.id]);
-    const total = accounts.reduce((s, a) => s + a.balanceCents, 0);
-    const lines = accounts.map((a) => `• ${esc(a.name)}: ${brl(a.balanceCents)}`).join("\n");
-    return `<b>Seu saldo:</b> ${brl(total)}\n\n${lines || "Nenhuma conta cadastrada."}`;
-  }
-
-  if (q === "family") {
-    let scope;
-    try {
-      scope = await resolveScope(db, user, "family");
-    } catch {
-      return "Sua conta não tem acesso aos dados da família. Fale com a família para ajustar as permissões no site.";
-    }
-    const [balance, totals] = await Promise.all([totalBalance(db, scope.userIds), monthTotals(db, scope.userIds, ym)]);
-    let text =
-      `<b>Família — ${monthLabel}</b>\n\n` +
-      `Saldo total: <b>${brl(balance)}</b>\n` +
-      `Receitas: ${brl(totals.incomeTotalCents)}\n` +
-      `Despesas: ${brl(totals.expenseTotalCents)}\n` +
-      `Resultado: <b>${signed(totals.incomeTotalCents - totals.expenseTotalCents)}</b>`;
-    if (scope.detail) {
-      const members = await listMembers(db);
-      const rows = await Promise.all(members.map(async (m) => ({ m, tot: await monthTotals(db, [m.id], ym) })));
-      text += "\n\n<b>Por pessoa (despesas do mês)</b>\n" + rows.map((r) => `• ${esc(r.m.name)}: ${brl(r.tot.expenseTotalCents)}`).join("\n");
-    }
-    return text;
-  }
-
-  if (q === "income" || q === "expenses") {
-    const kind = q === "income" ? "income" : "expense";
-    const [totals, cats] = await Promise.all([monthTotals(db, [user.id], ym), byCategory(db, [user.id], start, end, kind)]);
-    const total = kind === "income" ? totals.incomeTotalCents : totals.expenseTotalCents;
-    const done = kind === "income" ? totals.incomePaidCents : totals.expensePaidCents;
-    const lines = cats.slice(0, 6).map((c) => `• ${esc(c.name)}: ${brl(c.cents)} (${c.percent.toLocaleString("pt-BR")}%)`).join("\n");
-    return (
-      `<b>${kind === "income" ? "Suas receitas" : "Suas despesas"} — ${monthLabel}</b>\n\n` +
-      `Total: <b>${brl(total)}</b>\n${kind === "income" ? "Já recebido" : "Já pago"}: ${brl(done)}\n\n` +
-      (lines || "Nada registrado neste mês ainda.")
-    );
-  }
-
-  if (q === "bills" || q === "upcoming") {
-    const horizon = q === "upcoming" ? addDays(t, 15) : addDays(t, 30);
-    const { rows } = await db.query<TransactionRow>(
-      `SELECT t.id, t.description, t.amount_cents AS "amountCents", t.date FROM transactions t
-        WHERE t.user_id = $1 AND t.kind='expense' AND t.status='pending' AND t.deleted_at IS NULL
-          AND t.date <= $2 ${q === "upcoming" ? "AND t.date >= $3" : ""}
-        ORDER BY t.date LIMIT 25`,
-      q === "upcoming" ? [user.id, horizon, t] : [user.id, horizon],
-    );
-    if (!rows.length) return q === "upcoming" ? "Nenhum vencimento nos próximos 15 dias. 🎉" : "Você não tem contas pendentes nos próximos 30 dias. 🎉";
-    const overdue = rows.filter((r) => r.date < t);
-    const next = rows.filter((r) => r.date >= t);
-    let text = q === "upcoming" ? "<b>Próximos vencimentos (15 dias)</b>\n" : "<b>Suas contas a pagar</b>\n";
-    if (overdue.length) text += `\n<b>Atrasadas</b> (${brl(overdue.reduce((s, r) => s + r.amountCents, 0))})\n` + overdue.map((r) => txLine(r, t)).join("\n") + "\n";
-    if (next.length) text += `\n<b>A vencer</b> (${brl(next.reduce((s, r) => s + r.amountCents, 0))})\n` + next.map((r) => txLine(r, t)).join("\n");
-    return text;
-  }
-
-  if (q === "goals") {
-    const goals = (await listGoals(db, user, {})).filter((g) => g.scope === "family" || g.ownerId === user.id);
-    if (!goals.length) return "Nenhuma meta ativa. Crie uma pelo site em <b>Metas</b>.";
-    return (
-      "<b>Metas</b>\n\n" +
-      goals
-        .map(
-          (g) =>
-            `<b>${esc(g.name)}</b>${g.scope === "family" ? " · família" : ""}\n${bar(g.percent)} ${g.percent.toLocaleString("pt-BR")}%\n` +
-            `${brl(g.savedCents)} de ${brl(g.targetCents)}` +
-            (g.deadline ? ` · até ${dtFull(g.deadline)}` : "") +
-            (g.monthlyNeededCents ? `\nGuardar ~${brl(g.monthlyNeededCents)}/mês para chegar lá` : ""),
-        )
-        .join("\n\n")
-    );
-  }
-
-  // summary
-  const [totals, cats, balance] = await Promise.all([monthTotals(db, [user.id], ym), byCategory(db, [user.id], start, end, "expense"), totalBalance(db, [user.id])]);
-  const { rows: pend } = await db.query<{ overdue: number; week: number }>(
-    `SELECT count(*) FILTER (WHERE date < $2)::int AS overdue, count(*) FILTER (WHERE date >= $2 AND date <= $3)::int AS week
-       FROM transactions WHERE user_id = $1 AND kind='expense' AND status='pending' AND deleted_at IS NULL`,
-    [user.id, t, addDays(t, 7)],
-  );
-  const result = totals.incomeTotalCents - totals.expenseTotalCents;
-  return (
-    `<b>Resumo — ${monthLabel}</b>\n\n` +
-    `Saldo atual: <b>${brl(balance)}</b>\n` +
-    `Receitas: ${brl(totals.incomeTotalCents)}\n` +
-    `Despesas: ${brl(totals.expenseTotalCents)}\n` +
-    `Resultado do mês: <b>${signed(result)}</b>\n` +
-    (cats.length ? `\n<b>Maiores gastos</b>\n${cats.slice(0, 3).map((c) => `• ${esc(c.name)}: ${brl(c.cents)}`).join("\n")}\n` : "") +
-    (pend[0].overdue ? `\n⚠️ ${pend[0].overdue} conta(s) atrasada(s) — /contas` : "") +
-    (pend[0].week ? `\n📅 ${pend[0].week} vencimento(s) nos próximos 7 dias — /vencimentos` : "")
-  );
-}
-
-// ======================= Notificações (preferências) =======================
+// =========================== configurações ===========================
 
 const NOTIFY_FIELDS: Array<[string, string, string]> = [
   ["overdue", "notify_overdue", "Contas atrasadas"],
@@ -570,26 +889,28 @@ const NOTIFY_FIELDS: Array<[string, string, string]> = [
   ["anomaly", "notify_anomaly", "Gastos fora do padrão"],
 ];
 
-async function notificationKeyboard(ctx: AppContext, userId: number) {
+async function settingsKeyboard(ctx: AppContext, userId: number): Promise<InlineButton[][]> {
   const { rows } = await ctx.db.query<Record<string, unknown>>(
     "SELECT notify_due_days, notify_overdue, notify_daily, notify_weekly, notify_goals, notify_anomaly FROM users WHERE id = $1",
     [userId],
   );
   const u = rows[0];
   const kb: InlineButton[][] = NOTIFY_FIELDS.map(([key, col, label]) => [{ text: `${u[col] ? "✅" : "⬜️"} ${label}`, callback_data: `n:${key}` }]);
-  kb.unshift([{ text: `📅 Vencimentos: ${u.notify_due_days ? `${u.notify_due_days} dia(s) antes` : "desligado"}`, callback_data: "n:due" }]);
+  kb.unshift([{ text: `📅 Lembrete de vencimento: ${u.notify_due_days ? `${u.notify_due_days} dia(s) antes` : "desligado"}`, callback_data: "n:due" }]);
+  kb.push([{ text: "📊 Relatórios", callback_data: "r:month" }, { text: "🔌 Desconectar Telegram", callback_data: "u:ask" }]);
   return kb;
 }
 
-async function sendNotificationSettings(ctx: AppContext, user: User) {
-  await ctx.telegram!.sendMessage(user.chatId, "<b>Avisos automáticos</b>\nToque para ligar ou desligar:", {
-    reply_markup: { inline_keyboard: await notificationKeyboard(ctx, user.id) },
-  });
+async function sendSettings(ctx: AppContext, user: User) {
+  await ctx.telegram!.sendMessage(
+    user.chatId,
+    `⚙️ <b>Configurações</b>\nConectado como <b>${esc(user.name)}</b>.\nAvisos automáticos chegam entre 9h e 21h. Toque para ligar ou desligar:`,
+    { reply_markup: { inline_keyboard: await settingsKeyboard(ctx, user.id) } },
+  );
 }
 
 async function toggleNotification(ctx: AppContext, user: User, cb: TgCallbackQuery, key: string, messageId: number) {
   if (key === "due") {
-    // ciclo 0 → 1 → 3 → 5 → 7 → 0
     await ctx.db.query(
       `UPDATE users SET notify_due_days = CASE notify_due_days WHEN 0 THEN 1 WHEN 1 THEN 3 WHEN 3 THEN 5 WHEN 5 THEN 7 ELSE 0 END WHERE id = $1`,
       [user.id],
@@ -599,8 +920,10 @@ async function toggleNotification(ctx: AppContext, user: User, cb: TgCallbackQue
     if (!field) return ctx.telegram!.answerCallbackQuery(cb.id);
     await ctx.db.query(`UPDATE users SET ${field[1]} = NOT ${field[1]} WHERE id = $1`, [user.id]);
   }
-  await ctx.telegram!.editMessageText(user.chatId, messageId, "<b>Avisos automáticos</b>\nToque para ligar ou desligar:", {
-    reply_markup: { inline_keyboard: await notificationKeyboard(ctx, user.id) },
+  await ctx.telegram!.editMessageText(user.chatId, messageId, `⚙️ <b>Configurações</b>\nConectado como <b>${esc(user.name)}</b>.\nToque para ligar ou desligar:`, {
+    reply_markup: { inline_keyboard: await settingsKeyboard(ctx, user.id) },
   });
   await ctx.telegram!.answerCallbackQuery(cb.id, "Preferência salva");
 }
+
+export { TelegramError };

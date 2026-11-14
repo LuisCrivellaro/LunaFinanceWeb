@@ -19,6 +19,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:migrate": "tsx server/src/scripts/migrate.ts",
+    "db:rollback": "tsx server/src/scripts/rollback.ts",
     "family:setup": "tsx server/src/scripts/setup-family.ts",
     "family:reset-link": "tsx server/src/scripts/reset-link.ts",
     "telegram:set-webhook": "tsx server/src/scripts/telegram-webhook.ts set",

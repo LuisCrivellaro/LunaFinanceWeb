@@ -31,9 +31,22 @@ export interface TransactionRow {
   installmentNumber: number | null;
   installmentTotal: number | null;
   source: string;
+  paymentMethod: PaymentMethod | null;
   createdAt: string;
   overdue: boolean;
 }
+
+export const PAYMENT_METHODS = ["pix", "credit_card", "debit_card", "cash", "boleto", "transfer", "other"] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+export const PAYMENT_LABELS: Record<PaymentMethod, string> = {
+  pix: "Pix",
+  credit_card: "Cartão de crédito",
+  debit_card: "Cartão de débito",
+  cash: "Dinheiro",
+  boleto: "Boleto",
+  transfer: "Transferência",
+  other: "Outro",
+};
 
 export const TX_SELECT = `
   SELECT t.id, t.user_id AS "userId", t.account_id AS "accountId", a.name AS "accountName",
@@ -41,7 +54,7 @@ export const TX_SELECT = `
          t.kind, t.amount_cents AS "amountCents", t.description, t.date, t.status, t.paid_at AS "paidAt",
          t.nature, t.notes, t.recurrence_id AS "recurrenceId", t.installment_group AS "installmentGroup",
          t.installment_number AS "installmentNumber", t.installment_total AS "installmentTotal",
-         t.source, t.created_at AS "createdAt",
+         t.source, t.payment_method AS "paymentMethod", t.created_at AS "createdAt",
          (t.status = 'pending' AND t.date < $TODAY) AS overdue
     FROM transactions t
     JOIN accounts a ON a.id = t.account_id
@@ -63,6 +76,7 @@ export const TxInput = z
     categoryId: zId.optional().nullable(),
     nature: z.enum(["fixed", "variable"]).default("variable"),
     notes: z.string().trim().max(500).optional().nullable(),
+    paymentMethod: z.enum(PAYMENT_METHODS).optional().nullable(),
     installments: z.number().int().min(2, "Parcelamento a partir de 2x.").max(72, "Máximo de 72 parcelas.").optional().nullable(),
     /** Se verdadeiro, `amountCents` é o valor de CADA parcela; senão, é o total a dividir. */
     amountIsPerInstallment: z.boolean().optional(),
@@ -79,8 +93,16 @@ export const TxInput = z
 export type TxInputT = z.infer<typeof TxInput>;
 
 export async function createTransaction(db: Db, user: AuthUser, body: unknown, source: Source = "web", ip?: string) {
+  return db.tx((q) => createTransactionWith(q, user, body, source, ip));
+}
+
+/**
+ * Cria a movimentação usando uma transação de banco JÁ ABERTA — permite que o
+ * bot trave a confirmação e grave o lançamento de forma atômica (tudo ou nada).
+ */
+export async function createTransactionWith(q: Queryable, user: AuthUser, body: unknown, source: Source = "web", ip?: string) {
   const input = parse(TxInput, body);
-  return db.tx(async (q) => {
+  {
     const accountId = await getOwnAccount(q, user, input.accountId);
     const categoryId = await assertCategory(q, input.categoryId, input.kind);
     const src = source === "telegram" ? "telegram" : "web";
@@ -116,7 +138,7 @@ export async function createTransaction(db: Db, user: AuthUser, body: unknown, s
       details: { count: ids.length, kind: input.kind, amountCents: input.amountCents },
     });
     return getTransactions(q, ids);
-  });
+  }
 }
 
 async function insertOne(
@@ -132,10 +154,11 @@ async function insertOne(
   const paidAt = status === "paid" ? (extra.date ? date : (input.paidAt ?? date)) : null;
   const { rows } = await q.query<{ id: number }>(
     `INSERT INTO transactions (user_id, account_id, category_id, kind, amount_cents, description, date, status, paid_at,
-        nature, notes, recurrence_id, installment_group, installment_number, installment_total, source, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$1) RETURNING id`,
+        nature, notes, recurrence_id, installment_group, installment_number, installment_total, source, created_by, payment_method)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$1,$17) RETURNING id`,
     [user.id, base.accountId, base.categoryId, input.kind, extra.amount ?? input.amountCents, input.description, date, status, paidAt,
-     input.nature, input.notes ?? null, extra.recurrenceId ?? null, extra.group ?? null, extra.number ?? null, extra.total ?? null, source],
+     input.nature, input.notes ?? null, extra.recurrenceId ?? null, extra.group ?? null, extra.number ?? null, extra.total ?? null, source,
+     input.paymentMethod ?? null],
   );
   return rows[0].id;
 }
@@ -237,6 +260,7 @@ const TxPatch = z.object({
   categoryId: zId.optional().nullable(),
   nature: z.enum(["fixed", "variable"]).optional(),
   notes: z.string().trim().max(500).optional().nullable(),
+  paymentMethod: z.enum(PAYMENT_METHODS).optional().nullable(),
 });
 
 export async function updateTransaction(db: Db, user: AuthUser, id: number, body: unknown, source: Source = "web", ip?: string) {
@@ -271,6 +295,7 @@ export async function updateTransaction(db: Db, user: AuthUser, id: number, body
     if (patch.categoryId !== undefined) put("category_id", patch.categoryId);
     if (patch.nature) put("nature", patch.nature);
     if (patch.notes !== undefined) put("notes", patch.notes);
+    if (patch.paymentMethod !== undefined) put("payment_method", patch.paymentMethod);
     if (sets.length) await q.query(`UPDATE transactions SET ${sets.join(", ")}, updated_at = now() WHERE id = $1`, vals);
     await audit(q, { userId: user.id, action: "transaction.update", entity: "transaction", entityId: id, source, ip, details: patch });
     return (await getTransactions(q, [id]))[0];

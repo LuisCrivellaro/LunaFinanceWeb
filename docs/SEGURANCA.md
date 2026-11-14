@@ -32,9 +32,11 @@
 
 ## Telegram
 - Webhook só aceita requisições com o segredo correto (comparação em tempo constante).
-- Identidade = `from.id` vinculado; só chats privados; callback de outra pessoa é recusado.
-- Confirmação obrigatória com trava atômica (`UPDATE … WHERE status='pending'`) e expiração em 15 min.
-- `update_id` registrado para ignorar reenvios.
+- Identidade = `from.id` vinculado; só chats privados; botões de rascunhos de outra pessoa são recusados.
+- Confirmação obrigatória: trava do rascunho (status, versão e validade de 15 min) e gravação na mesma transação do banco — sem duplicidade, sem gravação parcial, cartões antigos não confirmam.
+- `update_id` registrado com status/tentativas: reenvios são ignorados; falhas transitórias são reprocessadas até 3 vezes.
+- IA (opcional) só lê dados por ferramentas do backend e só propõe rascunhos; respostas com valores que não vieram das ferramentas são descartadas. Não há SQL livre.
+- Detalhes: `docs/TELEGRAM.md`.
 
 ## Auditoria e recuperação
 - `audit_log` registra logins (inclusive falhos), criação/edição/exclusão de lançamentos, mudanças de permissão, links gerados, vínculos do Telegram.

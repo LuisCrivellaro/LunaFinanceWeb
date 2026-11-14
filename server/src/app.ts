@@ -8,7 +8,7 @@ import type { AppContext } from "./context.js";
 import { authenticate, csrfGuard, errorHandler, rateLimit } from "./http.js";
 import { safeEqual } from "./lib/crypto.js";
 import { apiRouter } from "./routes/api.js";
-import { handleUpdate } from "./telegram/bot.js";
+import { handleUpdate, RetryableError } from "./telegram/bot.js";
 import { runScheduledJobs } from "./notifications/jobs.js";
 
 export function createApp(ctx: AppContext) {
@@ -61,9 +61,14 @@ export function createApp(ctx: AppContext) {
       try {
         await handleUpdate(ctx, req.body);
       } catch (err) {
-        ctx.log.error("telegram.webhook_erro", { err: (err as Error).message });
+        if (err instanceof RetryableError) {
+          // falha transitória (ex.: banco indisponível): 500 faz o Telegram reenviar;
+          // o controle de tentativas em telegram_updates limita as repetições
+          res.status(500).json({ ok: false });
+          return;
+        }
+        ctx.log.error("telegram.webhook_erro", { err: (err as Error).message.slice(0, 200) });
       }
-      // sempre 200 após autenticar: o Telegram não deve reenviar em loop
       res.json({ ok: true });
     },
   );

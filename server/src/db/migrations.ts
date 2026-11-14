@@ -7,6 +7,8 @@ export interface Migration {
   id: number;
   name: string;
   sql: string;
+  /** SQL de reversão (npm run db:rollback). Perde apenas o que a migração criou. */
+  down?: string;
 }
 
 export const migrations: Migration[] = [
@@ -235,6 +237,50 @@ CREATE TABLE notification_log (
   sent_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, kind, ref_key)
 );
+`,
+  },
+  {
+    id: 2,
+    name: "telegram_assistant",
+    // Somente ADIÇÕES (colunas anuláveis/com default e tabelas novas): não altera
+    // nem apaga dados existentes. Reversão em `down`.
+    sql: /* sql */ `
+ALTER TABLE transactions ADD COLUMN payment_method TEXT
+  CHECK (payment_method IN ('pix','credit_card','debit_card','cash','boleto','transfer','other'));
+
+-- Controle de processamento dos updates (permite retentativa após falha)
+ALTER TABLE telegram_updates ADD COLUMN status TEXT NOT NULL DEFAULT 'done'
+  CHECK (status IN ('processing','done','failed'));
+ALTER TABLE telegram_updates ADD COLUMN attempts INT NOT NULL DEFAULT 1;
+
+-- Tipo da ação pendente (lançamento, meta, contribuição)
+ALTER TABLE telegram_pending_actions ADD COLUMN kind TEXT NOT NULL DEFAULT 'transaction'
+  CHECK (kind IN ('transaction','goal','contribution'));
+ALTER TABLE telegram_pending_actions ADD COLUMN version INT NOT NULL DEFAULT 1;
+CREATE INDEX tg_pending_user_idx ON telegram_pending_actions (user_id, status);
+
+-- Estado da conversa (ex.: aguardando o valor, editando a descrição)
+-- Palavras-chave extras nas categorias padrão (só acrescenta; não apaga nada)
+UPDATE categories SET keywords = keywords || ', trabalho, job'
+ WHERE is_default AND name = 'Freelance' AND keywords NOT LIKE '%trabalho%';
+UPDATE categories SET keywords = keywords || ', camiseta, camisa, calça, tênis, tenis, sapato, blusa, vestido'
+ WHERE is_default AND name = 'Compras' AND keywords NOT LIKE '%camiseta%';
+
+CREATE TABLE telegram_conversations (
+  user_id     INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  state       JSONB NOT NULL,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+`,
+    down: /* sql */ `
+DROP TABLE IF EXISTS telegram_conversations;
+DROP INDEX IF EXISTS tg_pending_user_idx;
+ALTER TABLE telegram_pending_actions DROP COLUMN IF EXISTS version;
+ALTER TABLE telegram_pending_actions DROP COLUMN IF EXISTS kind;
+ALTER TABLE telegram_updates DROP COLUMN IF EXISTS attempts;
+ALTER TABLE telegram_updates DROP COLUMN IF EXISTS status;
+ALTER TABLE transactions DROP COLUMN IF EXISTS payment_method;
 `,
   },
 ];

@@ -7,7 +7,7 @@ import { migrate } from "../src/db/migrate.js";
 import { setNow } from "../src/lib/clock.js";
 import { hashPassword } from "../src/lib/crypto.js";
 import type { SendOptions, TelegramApi } from "../src/telegram/api.js";
-import type { AiParser } from "../src/telegram/ai.js";
+import type { Assistant } from "../src/telegram/assistant.js";
 
 export const PASSWORD = "SenhaForte123";
 export const WEBHOOK_SECRET = "test-webhook-secret-0123456789abcdef";
@@ -19,26 +19,45 @@ export interface SentMessage {
   opts?: SendOptions;
 }
 
+/**
+ * Telegram falso: grava tudo que o bot "enviou" e permite simular falhas da
+ * API (`failNext("sendMessage", erro)` faz a próxima chamada desse método falhar).
+ */
 export function fakeTelegram() {
   const sent: SentMessage[] = [];
+  const failures: Array<{ method: string; error: Error }> = [];
   let nextId = 100;
+  const maybeFail = (method: string) => {
+    const i = failures.findIndex((f) => f.method === method);
+    if (i >= 0) throw failures.splice(i, 1)[0].error;
+  };
   const api: TelegramApi = {
     async sendMessage(chatId, text, opts) {
+      maybeFail("sendMessage");
       sent.push({ method: "sendMessage", chatId, text, opts });
       return { message_id: nextId++ };
     },
     async editMessageText(chatId, _messageId, text, opts) {
+      maybeFail("editMessageText");
       sent.push({ method: "editMessageText", chatId, text, opts });
     },
     async answerCallbackQuery(_id, text) {
+      maybeFail("answerCallbackQuery");
       sent.push({ method: "answerCallbackQuery", text });
     },
     async call(method) {
+      maybeFail(method);
       sent.push({ method });
       return {} as never;
     },
   };
-  return { api, sent, last: () => sent[sent.length - 1], clear: () => sent.splice(0) };
+  return {
+    api,
+    sent,
+    last: () => sent[sent.length - 1],
+    clear: () => sent.splice(0),
+    failNext: (method: string, error: Error) => failures.push({ method, error }),
+  };
 }
 
 export const FAMILY = [
@@ -50,13 +69,13 @@ export const FAMILY = [
 
 export type FamilyKey = (typeof FAMILY)[number]["key"];
 
-export async function setupTestApp(opts: { now?: string; ai?: AiParser | null } = {}) {
+export async function setupTestApp(opts: { now?: string; ai?: Assistant | null } = {}) {
   setNow(opts.now ?? "2026-11-14T15:00:00Z"); // 12h em São Paulo
   const config = {
     ...loadConfig({ NODE_ENV: "test" } as NodeJS.ProcessEnv),
     databaseUrl: "pglite://memory",
     appUrl: "https://luna.test",
-    telegram: { botToken: "test", botUsername: "LunaFinanceTestBot", webhookSecret: WEBHOOK_SECRET, enabled: true },
+    telegram: { botToken: "test", botUsername: "LunaFinanceTestBot", webhookSecret: WEBHOOK_SECRET, webhookUrl: "https://luna.test/telegram/webhook", enabled: true },
     cronSecret: "cron-secret-0123456789abcdef0123456789",
     schedulerEnabled: false,
     loginRateMax: 10000,

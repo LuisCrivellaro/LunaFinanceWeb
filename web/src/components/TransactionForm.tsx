@@ -4,7 +4,7 @@ import { Trash2 } from "lucide-react";
 import { ApiError, del, patch, post } from "../lib/api";
 import { useAccounts, useApp, useCategories, useInvalidateFinance } from "../lib/app";
 import { centsToInput, money, parseCents, todayIso } from "../lib/format";
-import type { Kind, Transaction } from "../lib/types";
+import { PAYMENT_LABELS, type Kind, type PaymentMethod, type Transaction } from "../lib/types";
 import { Modal } from "./ui";
 
 interface Props {
@@ -31,6 +31,7 @@ export function TransactionForm({ initial, preset, onClose }: Props) {
   const [accountId, setAccountId] = useState<number | "">(initial?.accountId ?? "");
   const [nature, setNature] = useState<"fixed" | "variable">(initial?.nature ?? "variable");
   const [notes, setNotes] = useState(initial?.notes ?? "");
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | "">(initial?.paymentMethod ?? "");
   const [mode, setMode] = useState<Mode>("single");
   const [installments, setInstallments] = useState(2);
   const [endDate, setEndDate] = useState("");
@@ -53,6 +54,7 @@ export function TransactionForm({ initial, preset, onClose }: Props) {
         categoryId: categoryId || null,
         nature: mode === "recurring" && nature === "variable" && !editing ? "fixed" : nature,
         notes: notes.trim() || null,
+        paymentMethod: paymentMethod || null,
         ...(accountId ? { accountId } : {}),
       };
       if (editing) return patch(`/transactions/${initial!.id}`, body);
@@ -262,6 +264,18 @@ export function TransactionForm({ initial, preset, onClose }: Props) {
             Parcela {initial.installmentNumber} de {initial.installmentTotal}.
           </div>
         )}
+
+        <label className="field">
+          <span>Forma de pagamento</span>
+          <select className="select" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod | "")}>
+            <option value="">Não informar</option>
+            {(Object.keys(PAYMENT_LABELS) as PaymentMethod[]).map((m) => (
+              <option key={m} value={m}>
+                {PAYMENT_LABELS[m]}
+              </option>
+            ))}
+          </select>
+        </label>
 
         {accounts.length > 1 && (
           <label className="field">

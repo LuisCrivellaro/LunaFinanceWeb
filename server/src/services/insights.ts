@@ -9,7 +9,7 @@ import { canSeeDetailsOf, resolveScope, type AuthUser, type ViewRequest } from "
 import { listAccounts, totalBalance } from "./accounts.js";
 import { listGoals } from "./goals.js";
 import { listMembers } from "./members.js";
-import { TX_SELECT, type TransactionRow } from "./transactions.js";
+import { PAYMENT_LABELS, TX_SELECT, type TransactionRow } from "./transactions.js";
 
 const ACTIVE = "t.deleted_at IS NULL";
 
@@ -259,7 +259,7 @@ export async function exportCsv(q: Queryable, viewer: AuthUser, view: ViewReques
     `${TX_SELECT.replace("$TODAY", "$4::date")} WHERE ${ACTIVE} AND t.user_id = ANY($1::int[]) AND t.date BETWEEN $2 AND $3 ORDER BY t.date, t.id`,
     [ids, from, to, today()],
   );
-  const header = ["Data", "Tipo", "Descrição", "Categoria", "Valor (R$)", "Situação", "Pago em", "Responsável", "Conta", "Natureza", "Parcela", "Observações"];
+  const header = ["Data", "Tipo", "Descrição", "Categoria", "Valor (R$)", "Situação", "Pago em", "Responsável", "Conta", "Natureza", "Parcela", "Forma de pagamento", "Origem", "Observações"];
   const lines = [header.join(";")];
   for (const r of rows) {
     lines.push(
@@ -275,6 +275,8 @@ export async function exportCsv(q: Queryable, viewer: AuthUser, view: ViewReques
         r.accountName,
         r.nature === "fixed" ? "Fixa" : "Variável",
         r.installmentNumber ? `${r.installmentNumber}/${r.installmentTotal}` : "",
+        r.paymentMethod ? PAYMENT_LABELS[r.paymentMethod] : "",
+        r.source === "telegram" ? "Telegram" : r.source === "recurrence" ? "Recorrência" : "Site",
         r.notes ?? "",
       ].map(csvCell).join(";"),
     );

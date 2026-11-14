@@ -1,14 +1,15 @@
 import type { Config } from "./config.js";
 import type { Db } from "./db/index.js";
 import type { TelegramApi } from "./telegram/api.js";
-import type { AiParser } from "./telegram/ai.js";
+import type { Assistant } from "./telegram/assistant.js";
 
 /** Dependências compartilhadas, injetadas (facilita testes com fakes). */
 export interface AppContext {
   db: Db;
   config: Config;
   telegram: TelegramApi | null;
-  ai: AiParser | null;
+  /** Assistente com IA (opcional). */
+  ai: Assistant | null;
   log: Logger;
 }
 

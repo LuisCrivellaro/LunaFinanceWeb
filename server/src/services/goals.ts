@@ -82,9 +82,13 @@ const GoalInput = z.object({
 });
 
 export async function createGoal(db: Db, user: AuthUser, body: unknown, source: Source = "web") {
+  return db.tx((q) => createGoalWith(q, user, body, source));
+}
+
+export async function createGoalWith(q: Queryable, user: AuthUser, body: unknown, source: Source = "web") {
   const input = parse(GoalInput, body);
   if (input.scope === "family" && user.family_access === "none") throw forbidden("Sua conta não participa das metas da família.");
-  return db.tx(async (q) => {
+  {
     const { rows } = await q.query<{ id: number }>(
       `INSERT INTO goals (scope, owner_id, name, target_cents, deadline, color, icon) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
       [input.scope, user.id, input.name, input.targetCents, input.deadline ?? null, input.color, input.icon],
@@ -96,7 +100,7 @@ export async function createGoal(db: Db, user: AuthUser, body: unknown, source: 
     await refreshAchieved(q, id);
     await audit(q, { userId: user.id, action: "goal.create", entity: "goal", entityId: id, source });
     return loadGoal(q, user, id);
-  });
+  }
 }
 
 export async function updateGoal(db: Db, user: AuthUser, id: number, body: unknown) {
@@ -132,8 +136,12 @@ const ContributionInput = z.object({
 });
 
 export async function contribute(db: Db, user: AuthUser, goalId: number, body: unknown, source: Source = "web") {
+  return db.tx((q) => contributeWith(q, user, goalId, body, source));
+}
+
+export async function contributeWith(q: Queryable, user: AuthUser, goalId: number, body: unknown, source: Source = "web") {
   const input = parse(ContributionInput, body);
-  return db.tx(async (q) => {
+  {
     const g = await loadGoal(q, user, goalId);
     if (g.archived) throw badRequest("Esta meta está arquivada.");
     if (g.scope === "individual") assertOwner(user, g.ownerId, "esta meta");
@@ -150,7 +158,7 @@ export async function contribute(db: Db, user: AuthUser, goalId: number, body: u
     await refreshAchieved(q, goalId);
     await audit(q, { userId: user.id, action: "goal.contribute", entity: "goal", entityId: goalId, source, details: { amountCents: input.amountCents } });
     return { id: rows[0].id, goal: await loadGoal(q, user, goalId) };
-  });
+  }
 }
 
 export async function listContributions(q: Queryable, user: AuthUser, goalId: number) {

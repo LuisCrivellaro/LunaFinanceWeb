@@ -4,7 +4,7 @@ import { ChevronLeft, ChevronRight, Download, Plus, ReceiptText, Repeat, Search,
 import { get, qs } from "../lib/api";
 import { useApp, useCategories, useMe, useMemberLookup, viewParam } from "../lib/app";
 import { currentYm, dateHeading, firstName, monthBounds, monthLong, money, shiftYm, todayIso } from "../lib/format";
-import type { Transaction } from "../lib/types";
+import { PAYMENT_LABELS, type Transaction } from "../lib/types";
 import { Avatar, CategoryIcon, Empty, ErrorState, Money, Skeleton, StatusChip, ViewSwitch } from "../components/ui";
 import { TransactionForm } from "../components/TransactionForm";
 
@@ -203,6 +203,7 @@ export function TransactionsPage() {
                         <div className="sub">
                           <span>{t.categoryName ?? "Sem categoria"}</span>
                           {t.installmentNumber && <span className="tnum">· {t.installmentNumber}/{t.installmentTotal}</span>}
+                          {t.paymentMethod && <span>· {PAYMENT_LABELS[t.paymentMethod]}</span>}
                           {t.recurrenceId && <Repeat size={12} aria-label="Recorrente" />}
                           {t.source === "telegram" && <Send size={12} aria-label="Registrado pelo Telegram" />}
                           {t.status === "pending" && <StatusChip status={t.status} overdue={t.overdue} kind={t.kind} />}

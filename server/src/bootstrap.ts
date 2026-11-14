@@ -3,7 +3,7 @@ import { createLogger, type AppContext } from "./context.js";
 import { createDb } from "./db/index.js";
 import { migrate } from "./db/migrate.js";
 import { setTimezone } from "./lib/clock.js";
-import { createAiParser } from "./telegram/ai.js";
+import { createAssistant } from "./telegram/assistant.js";
 import { createTelegramApi } from "./telegram/api.js";
 
 export async function createContext(config: Config = loadConfig()): Promise<AppContext> {
@@ -16,6 +16,6 @@ export async function createContext(config: Config = loadConfig()): Promise<AppC
     config,
     log,
     telegram: config.telegram.botToken ? createTelegramApi(config.telegram.botToken) : null,
-    ai: config.ai.enabled ? createAiParser(config.ai.apiKey, config.ai.model, log) : null,
+    ai: config.ai.enabled ? createAssistant({ apiKey: config.ai.apiKey, model: config.ai.model, effort: config.ai.effort, log }) : null,
   };
 }

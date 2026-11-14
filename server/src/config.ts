@@ -50,6 +50,8 @@ export interface Config {
     botToken: string;
     botUsername: string;
     webhookSecret: string;
+    /** URL pública completa do webhook (padrão: APP_URL + /telegram/webhook). */
+    webhookUrl: string;
     enabled: boolean;
   };
   cronSecret: string;
@@ -57,6 +59,7 @@ export interface Config {
   ai: {
     apiKey: string;
     model: string;
+    effort: "low" | "medium" | "high";
     enabled: boolean;
   };
 }
@@ -66,11 +69,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const botToken = env.TELEGRAM_BOT_TOKEN ?? "";
   const webhookSecret = env.TELEGRAM_WEBHOOK_SECRET ?? "";
   const aiKey = env.ANTHROPIC_API_KEY ?? "";
+  const appUrl = (env.APP_URL ?? "http://localhost:5173").replace(/\/$/, "");
   const cfg: Config = {
     env: nodeEnv,
     port: int(env.PORT, 3000),
     databaseUrl: env.DATABASE_URL ?? (nodeEnv === "production" ? "" : "pglite://.data/luna"),
-    appUrl: (env.APP_URL ?? "http://localhost:5173").replace(/\/$/, ""),
+    appUrl,
     timezone: env.APP_TIMEZONE ?? "America/Sao_Paulo",
     sessionDays: int(env.SESSION_DAYS, 30),
     loginRateMax: int(env.LOGIN_RATE_MAX, 20),
@@ -80,6 +84,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       botToken,
       botUsername: (env.TELEGRAM_BOT_USERNAME ?? "").replace(/^@/, ""),
       webhookSecret,
+      webhookUrl: (env.TELEGRAM_WEBHOOK_URL || `${appUrl}/telegram/webhook`).replace(/\/$/, ""),
       enabled: Boolean(botToken && webhookSecret),
     },
     cronSecret: env.CRON_SECRET ?? "",
@@ -87,6 +92,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ai: {
       apiKey: aiKey,
       model: env.LUNA_AI_MODEL || "claude-opus-5-5",
+      effort: (["low", "medium", "high"].includes(env.LUNA_AI_EFFORT ?? "") ? env.LUNA_AI_EFFORT : "low") as "low" | "medium" | "high",
       enabled: Boolean(aiKey) && bool(env.LUNA_AI_ENABLED, true),
     },
   };
@@ -99,6 +105,8 @@ export function assertProductionConfig(cfg: Config) {
   const problems: string[] = [];
   if (!cfg.databaseUrl) problems.push("DATABASE_URL não definido");
   if (!cfg.appUrl.startsWith("https://")) problems.push("APP_URL deve usar https:// em produção");
+  if (cfg.telegram.botToken && !cfg.telegram.webhookUrl.startsWith("https://"))
+    problems.push("TELEGRAM_WEBHOOK_URL deve usar https://");
   if (cfg.telegram.botToken && cfg.telegram.webhookSecret.length < 32)
     problems.push("TELEGRAM_WEBHOOK_SECRET deve ter pelo menos 32 caracteres");
   if (cfg.cronSecret && cfg.cronSecret.length < 32) problems.push("CRON_SECRET deve ter pelo menos 32 caracteres");

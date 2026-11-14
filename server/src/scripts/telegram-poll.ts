@@ -7,7 +7,7 @@
  */
 import { loadConfig } from "../config.js";
 import { createContext } from "../bootstrap.js";
-import { handleUpdate, type TgUpdate } from "../telegram/bot.js";
+import { handleUpdate, RetryableError, type TgUpdate } from "../telegram/bot.js";
 import { startScheduler } from "../notifications/jobs.js";
 
 const config = loadConfig();
@@ -16,6 +16,7 @@ if (!config.telegram.botToken) throw new Error("Defina TELEGRAM_BOT_TOKEN no .en
 
 const ctx = await createContext({ ...config, telegram: { ...config.telegram, enabled: true } });
 const tg = ctx.telegram!;
+// webhook e polling nunca ficam ativos ao mesmo tempo
 const info = await tg.call<{ url: string }>("getWebhookInfo");
 if (info.url) {
   console.error(`Há um webhook ativo (${info.url}). Rode "npm run telegram:delete-webhook" antes de usar o polling.`);
@@ -30,8 +31,17 @@ for (;;) {
   try {
     const updates = await tg.call<TgUpdate[]>("getUpdates", { offset, timeout: 25, allowed_updates: ["message", "callback_query"] });
     for (const u of updates) {
+      try {
+        await handleUpdate(ctx, u);
+      } catch (err) {
+        if (err instanceof RetryableError) {
+          // não avança o offset: o mesmo update volta na próxima chamada
+          await new Promise((r) => setTimeout(r, 2000));
+          break;
+        }
+        throw err;
+      }
       offset = u.update_id + 1;
-      await handleUpdate(ctx, u);
     }
   } catch (err) {
     console.error("Falha no polling:", (err as Error).message);

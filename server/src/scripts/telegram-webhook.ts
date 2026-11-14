@@ -15,13 +15,14 @@ const tg = createTelegramApi(cfg.telegram.botToken);
 if (mode === "set") {
   if (cfg.telegram.webhookSecret.length < 32) throw new Error("Defina TELEGRAM_WEBHOOK_SECRET com 32+ caracteres (A-Z, a-z, 0-9, _ e -)");
   if (!/^[A-Za-z0-9_-]{1,256}$/.test(cfg.telegram.webhookSecret)) throw new Error("TELEGRAM_WEBHOOK_SECRET só pode ter A-Z, a-z, 0-9, _ e -");
-  if (!cfg.appUrl.startsWith("https://")) throw new Error("APP_URL precisa ser https:// (exigência do Telegram)");
-  const url = `${cfg.appUrl}/telegram/webhook`;
+  const url = cfg.telegram.webhookUrl;
+  if (!url.startsWith("https://")) throw new Error("A URL do webhook precisa ser https:// (exigência do Telegram). Ajuste TELEGRAM_WEBHOOK_URL ou APP_URL.");
   await tg.call("setWebhook", {
     url,
     secret_token: cfg.telegram.webhookSecret,
     allowed_updates: ["message", "callback_query"],
     max_connections: 10,
+    drop_pending_updates: process.argv.includes("--drop-pending"),
   });
   await tg.call("setMyCommands", { commands: BOT_COMMANDS });
   const me = await tg.call<{ username: string }>("getMe");

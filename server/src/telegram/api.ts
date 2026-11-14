@@ -21,30 +21,68 @@ export interface TelegramApi {
 }
 
 export class TelegramError extends Error {
-  constructor(public method: string, public errorCode: number | undefined, description: string) {
+  readonly transient: boolean;
+  readonly retryAfter?: number;
+  constructor(public method: string, public errorCode: number | undefined, public description: string, opts: { transient?: boolean; retryAfter?: number } = {}) {
     super(`Telegram ${method} falhou: ${description}`);
+    this.transient = opts.transient ?? false;
+    this.retryAfter = opts.retryAfter;
   }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Cliente com:
+ *  - timeout por chamada (10s; long polling usa o próprio timeout + 10s);
+ *  - 429: respeita `parameters.retry_after` (até 10s) e tenta mais uma vez;
+ *  - falha de rede / 5xx: uma nova tentativa após 1s;
+ *  - "message is not modified" em edições é tratado como sucesso.
+ * O token nunca entra em mensagens de erro ou logs.
+ */
 export function createTelegramApi(token: string, fetchImpl: typeof fetch = fetch): TelegramApi {
   const base = `https://api.telegram.org/bot${token}`;
-  async function call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  async function once<T>(method: string, params: Record<string, unknown>): Promise<T> {
     const ctrl = new AbortController();
-    // getUpdates com long polling espera `timeout` segundos no servidor do Telegram
     const waitMs = typeof params.timeout === "number" ? (params.timeout + 10) * 1000 : 10000;
     const timer = setTimeout(() => ctrl.abort(), waitMs);
     try {
-      const res = await fetchImpl(`${base}/${method}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(params),
-        signal: ctrl.signal,
-      });
-      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; result?: T; description?: string; error_code?: number };
-      if (!data.ok) throw new TelegramError(method, data.error_code ?? res.status, data.description ?? `HTTP ${res.status}`);
+      let res: Response;
+      try {
+        res = await fetchImpl(`${base}/${method}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(params),
+          signal: ctrl.signal,
+        });
+      } catch (err) {
+        const aborted = (err as Error).name === "AbortError";
+        throw new TelegramError(method, undefined, aborted ? "tempo esgotado" : "falha de rede", { transient: true });
+      }
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean; result?: T; description?: string; error_code?: number; parameters?: { retry_after?: number };
+      };
+      if (!data.ok) {
+        const code = data.error_code ?? res.status;
+        throw new TelegramError(method, code, data.description ?? `HTTP ${res.status}`, {
+          retryAfter: data.parameters?.retry_after,
+          transient: code >= 500 || code === 429,
+        });
+      }
       return data.result as T;
     } finally {
       clearTimeout(timer);
+    }
+  }
+  async function call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    try {
+      return await once<T>(method, params);
+    } catch (err) {
+      if (!(err instanceof TelegramError) || !err.transient || method === "getUpdates") throw err;
+      const wait = err.errorCode === 429 ? Math.min(10, err.retryAfter ?? 1) * 1000 : 1000;
+      if (err.errorCode === 429 && (err.retryAfter ?? 0) > 10) throw err; // não segura a requisição por muito tempo
+      await sleep(wait);
+      return once<T>(method, params);
     }
   }
   return {
@@ -59,32 +97,43 @@ export function createTelegramApi(token: string, fetchImpl: typeof fetch = fetch
       });
     },
     async editMessageText(chatId, messageId, text, opts = {}) {
-      await call("editMessageText", {
-        chat_id: chatId,
-        message_id: messageId,
-        text,
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-        ...(opts.reply_markup ? { reply_markup: opts.reply_markup } : {}),
-      });
+      try {
+        await call("editMessageText", {
+          chat_id: chatId,
+          message_id: messageId,
+          text,
+          parse_mode: "HTML",
+          disable_web_page_preview: true,
+          ...(opts.reply_markup ? { reply_markup: opts.reply_markup } : {}),
+        });
+      } catch (err) {
+        if (err instanceof TelegramError && /message is not modified/i.test(err.description)) return;
+        throw err;
+      }
     },
     async answerCallbackQuery(id, text) {
-      await call("answerCallbackQuery", { callback_query_id: id, ...(text ? { text } : {}) });
+      try {
+        await call("answerCallbackQuery", { callback_query_id: id, ...(text ? { text } : {}) });
+      } catch (err) {
+        // callback antigo (>15 min) não pode mais ser respondido — não é erro do usuário
+        if (err instanceof TelegramError && /query is too old|query ID is invalid/i.test(err.description)) return;
+        throw err;
+      }
     },
   };
 }
 
 /** Comandos exibidos no menu do Telegram (setMyCommands). */
 export const BOT_COMMANDS = [
-  { command: "resumo", description: "Resumo financeiro do mês" },
-  { command: "saldo", description: "Seu saldo" },
-  { command: "familia", description: "Saldo e resumo da família" },
-  { command: "receitas", description: "Receitas do mês" },
-  { command: "despesas", description: "Despesas do mês" },
+  { command: "resumo", description: "Resumo do mês e relatórios" },
+  { command: "saldo", description: "Saldo disponível" },
+  { command: "despesas", description: "Últimas despesas" },
+  { command: "receitas", description: "Últimas receitas" },
+  { command: "metas", description: "Metas financeiras" },
   { command: "contas", description: "Contas pendentes e atrasadas" },
   { command: "vencimentos", description: "Próximos vencimentos" },
-  { command: "metas", description: "Metas financeiras" },
-  { command: "notificacoes", description: "Preferências de avisos" },
+  { command: "familia", description: "Resumo da família" },
+  { command: "cancelar", description: "Cancelar operação em andamento" },
+  { command: "configuracoes", description: "Preferências e avisos" },
   { command: "ajuda", description: "Como usar o bot" },
-  { command: "desvincular", description: "Desconectar esta conta do Telegram" },
 ];

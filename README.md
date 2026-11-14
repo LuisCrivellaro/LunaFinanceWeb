@@ -7,7 +7,7 @@ Gestão financeira da família — pelo site e pelo Telegram, no mesmo banco de 
 - **Contas a pagar**: atrasadas, a vencer, pagas, recorrentes e histórico.
 - **Metas** individuais e familiares, com contribuições, retiradas e progresso (fases da lua 🌒).
 - **Relatórios** mensais e anuais, por categoria e por responsável, com exportação **CSV** e **PDF** (impressão).
-- **Bot do Telegram**: consultas, registro por linguagem natural com confirmação, pagamento de contas e avisos automáticos.
+- **Bot do Telegram**: registro por linguagem natural (valor, data, categoria, conta e forma de pagamento) com resumo, edição e confirmação; consultas e relatórios; metas; pagamento de contas; avisos automáticos; IA opcional com ferramentas controladas. Guia: [`docs/TELEGRAM.md`](docs/TELEGRAM.md).
 
 ## Stack
 
@@ -58,6 +58,7 @@ Para usar dados reais em vez da demonstração, apague `.data/` e veja **Primeir
 | `npm run family:reset-link -- --email x@y` | novo link para redefinir senha |
 | `npm run backup [-- --out arquivo.json]` | backup lógico completo (JSON, permissão 600) |
 | `npm run restore -- --file x.json --confirm` | restaura em um banco **vazio** |
+| `npm run db:migrate` / `npm run db:rollback -- --confirm` | aplica migrações / reverte a última (faça backup antes) |
 | `npm run telegram:set-webhook` / `:webhook-info` / `:delete-webhook` | gerencia o webhook |
 | `npm run telegram:poll` | bot local sem domínio público (só desenvolvimento) |
 

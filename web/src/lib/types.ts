@@ -69,8 +69,20 @@ export interface Transaction {
   installmentNumber: number | null;
   installmentTotal: number | null;
   source: string;
+  paymentMethod: PaymentMethod | null;
   overdue: boolean;
 }
+
+export type PaymentMethod = "pix" | "credit_card" | "debit_card" | "cash" | "boleto" | "transfer" | "other";
+export const PAYMENT_LABELS: Record<PaymentMethod, string> = {
+  pix: "Pix",
+  credit_card: "Cartão de crédito",
+  debit_card: "Cartão de débito",
+  cash: "Dinheiro",
+  boleto: "Boleto",
+  transfer: "Transferência",
+  other: "Outro",
+};
 
 export interface Goal {
   id: number;
