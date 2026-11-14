@@ -1,0 +1,6 @@
+[
+  { "name": "Luciana", "email": "luciana@exemplo.com" },
+  { "name": "Luís Carlos", "email": "luiscarlos@exemplo.com" },
+  { "name": "Lipe", "email": "lipe@exemplo.com", "manager": true },
+  { "name": "João", "email": "joao@exemplo.com" }
+]

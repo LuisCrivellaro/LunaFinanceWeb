@@ -30,6 +30,7 @@ export function createApp(ctx: AppContext) {
           formAction: ["'self'"],
           baseUri: ["'self'"],
           objectSrc: ["'none'"],
+          upgradeInsecureRequests: ctx.config.env === "production" ? [] : null,
         },
       },
       referrerPolicy: { policy: "no-referrer" },

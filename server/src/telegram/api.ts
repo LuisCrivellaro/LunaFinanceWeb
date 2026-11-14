@@ -30,7 +30,9 @@ export function createTelegramApi(token: string, fetchImpl: typeof fetch = fetch
   const base = `https://api.telegram.org/bot${token}`;
   async function call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 10000);
+    // getUpdates com long polling espera `timeout` segundos no servidor do Telegram
+    const waitMs = typeof params.timeout === "number" ? (params.timeout + 10) * 1000 : 10000;
+    const timer = setTimeout(() => ctrl.abort(), waitMs);
     try {
       const res = await fetchImpl(`${base}/${method}`, {
         method: "POST",

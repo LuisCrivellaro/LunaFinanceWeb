@@ -448,6 +448,14 @@ export async function updateRecurrence(db: Db, user: AuthUser, id: number, body:
     if (p.active === false) {
       await q.query(`UPDATE transactions SET deleted_at = now() WHERE ${future}`, [id, t]);
     } else {
+      if (p.active === true) {
+        // retomar: restaura as ocorrências futuras removidas na pausa
+        await q.query(
+          `UPDATE transactions SET deleted_at = NULL, updated_at = now()
+            WHERE recurrence_id = $1 AND status = 'pending' AND date >= $2 AND deleted_at IS NOT NULL`,
+          [id, t],
+        );
+      }
       if (p.amountCents) await q.query(`UPDATE transactions SET amount_cents = $3, updated_at = now() WHERE ${future}`, [id, t, p.amountCents]);
       if (p.description) await q.query(`UPDATE transactions SET description = $3, updated_at = now() WHERE ${future}`, [id, t, p.description]);
       if (p.categoryId !== undefined) await q.query(`UPDATE transactions SET category_id = $3, updated_at = now() WHERE ${future}`, [id, t, p.categoryId]);

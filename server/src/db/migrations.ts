@@ -23,7 +23,7 @@ CREATE TABLE users (
   role            TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin','member')),
   -- O que a pessoa pode ver dos demais: nada, só totais, ou tudo.
   family_access   TEXT NOT NULL DEFAULT 'full' CHECK (family_access IN ('none','summary','full')),
-  color           TEXT NOT NULL DEFAULT '#5B6CFF',
+  color           TEXT NOT NULL DEFAULT '#2a78d6',
   active          BOOLEAN NOT NULL DEFAULT TRUE,
   failed_logins   INT NOT NULL DEFAULT 0,
   locked_until    TIMESTAMPTZ,

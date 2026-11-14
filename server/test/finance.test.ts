@@ -125,6 +125,12 @@ describe("recorrência e contas a pagar", () => {
     const { rows } = await t.db.query("SELECT count(*)::int AS n FROM transactions WHERE recurrence_id = $1 AND deleted_at IS NULL AND status = 'pending' AND date >= '2026-11-14'", [recurrenceId]);
     expect(rows[0].n).toBe(0);
   });
+
+  it("retomar recorrência restaura as próximas ocorrências", async () => {
+    await lu.patch(`/api/recurrences/${recurrenceId}`).send({ active: true });
+    const { rows } = await t.db.query("SELECT count(*)::int AS n FROM transactions WHERE recurrence_id = $1 AND deleted_at IS NULL AND status = 'pending' AND date >= '2026-11-14'", [recurrenceId]);
+    expect(rows[0].n).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe("metas", () => {

@@ -35,7 +35,8 @@ await withContext(async (ctx) => {
           vals,
         );
       }
-      // reposiciona a sequência do id
+      // reposiciona a sequência do id (telegram_links usa user_id como chave)
+      if (t === "telegram_links") continue;
       await q.query(
         `SELECT setval(pg_get_serial_sequence('${t}', 'id'), COALESCE((SELECT max(id) FROM ${t}), 0) + 1, false)
           WHERE pg_get_serial_sequence('${t}', 'id') IS NOT NULL`,

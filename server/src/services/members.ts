@@ -5,7 +5,9 @@ import { audit } from "./audit.js";
 import { createAccessLink, revokeAllSessions } from "./auth.js";
 
 /** Cor de cada pessoa — mesma "importância" visual para todos. */
-export const MEMBER_PALETTE = ["#4F6BED", "#2F9E7A", "#D9822B", "#B5508A", "#3A8FB7", "#8A6FDB"];
+// Validada (skill dataviz: CVD ΔE ≥ 9 entre vizinhas, claro e escuro). O frontend
+// troca para o passo escuro equivalente no modo escuro.
+export const MEMBER_PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#6250d6", "#e87ba4", "#eda100"];
 
 /**
  * Formato público de um integrante. Propositalmente SEM `role`:
