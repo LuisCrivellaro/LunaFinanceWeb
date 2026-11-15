@@ -11,6 +11,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { setNow } from "../src/lib/clock.js";
 import { runScheduledJobs } from "../src/notifications/jobs.js";
 import { createTelegramApi, TelegramError } from "../src/telegram/api.js";
+import { prepareTelegram } from "../src/telegram/setup.js";
+import { assertProductionConfig, loadConfig } from "../src/config.js";
 import type { TgUpdate } from "../src/telegram/bot.js";
 import { aiLimiter, messageLimiter } from "../src/telegram/throttle.js";
 import { WEBHOOK_SECRET, setupTestApp, type TestApp } from "./helpers.js";
@@ -796,6 +798,51 @@ describe("configurações e notificações", () => {
       api.call = realCall;
       t.ctx.config.telegram.webhookGuard = false;
     }
+  });
+
+  it("ao iniciar, descobre o @ do bot e registra webhook + comandos sozinho", async () => {
+    const api = t.ctx.telegram!;
+    const realCall = api.call;
+    const tcfg = t.ctx.config.telegram;
+    const savedUser = tcfg.botUsername;
+    let url = "";
+    const methods: string[] = [];
+    api.call = (async (method: string, params?: Record<string, unknown>) => {
+      methods.push(method);
+      if (method === "getMe") return { username: "LunaFamiliaBot" };
+      if (method === "getWebhookInfo") return { url };
+      if (method === "setWebhook") url = String(params!.url);
+      return true;
+    }) as typeof api.call;
+    tcfg.botUsername = "";
+    tcfg.webhookGuard = true;
+    try {
+      await prepareTelegram(t.ctx);
+      expect(tcfg.botUsername).toBe("LunaFamiliaBot");
+      expect(methods).toEqual(["getMe", "getWebhookInfo", "setWebhook", "setMyCommands"]);
+      expect(url).toBe("https://luna.test/telegram/webhook");
+      // token inválido/revogado: só registra no log, não derruba o servidor
+      api.call = (async () => {
+        throw new TelegramError("getMe", 401, "Unauthorized");
+      }) as typeof api.call;
+      await expect(prepareTelegram(t.ctx)).resolves.toBeUndefined();
+    } finally {
+      api.call = realCall;
+      tcfg.botUsername = savedUser;
+      tcfg.webhookGuard = false;
+    }
+  });
+
+  it("Railway/Render: domínio público vem da plataforma; segredo fraco é recusado", () => {
+    const base = { NODE_ENV: "production", DATABASE_URL: "postgres://x", TELEGRAM_BOT_TOKEN: "1:x" };
+    const rw = loadConfig({ ...base, RAILWAY_PUBLIC_DOMAIN: "luna.up.railway.app", TELEGRAM_WEBHOOK_SECRET: "a".repeat(64) });
+    expect(rw.appUrl).toBe("https://luna.up.railway.app");
+    expect(rw.telegram.webhookUrl).toBe("https://luna.up.railway.app/telegram/webhook");
+    expect(() => assertProductionConfig(rw)).not.toThrow();
+    expect(loadConfig({ ...base, RENDER_EXTERNAL_URL: "https://luna.onrender.com" }).appUrl).toBe("https://luna.onrender.com");
+    expect(loadConfig({ ...base, APP_URL: "https://meu.dominio", RAILWAY_PUBLIC_DOMAIN: "x.up.railway.app" }).appUrl).toBe("https://meu.dominio");
+    expect(() => assertProductionConfig(loadConfig({ ...base, RAILWAY_PUBLIC_DOMAIN: "x.app", TELEGRAM_WEBHOOK_SECRET: "curto" }))).toThrow(/32 caracteres/);
+    expect(() => assertProductionConfig(loadConfig({ ...base, RAILWAY_PUBLIC_DOMAIN: "x.app", TELEGRAM_WEBHOOK_SECRET: "é".repeat(40) }))).toThrow(/só pode ter/);
   });
 
   it("desvincular pelo bot pede confirmação e corta o acesso", async () => {

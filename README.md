@@ -36,7 +36,7 @@ Para usar dados reais em vez da demonstração, apague `.data/` e veja **Primeir
 ## Produção
 
 1. **Banco Postgres gerenciado** (Neon, Supabase, Railway, RDS…) com backup automático habilitado. Copie a URL de conexão para `DATABASE_URL`.
-2. **Hospedagem** de um container Docker sempre ativo (Railway, Render, Fly.io, VPS). O `Dockerfile` está pronto. Configure as variáveis do `.env.example` e `NODE_ENV=production`, `APP_URL=https://seu-dominio`, `TRUST_PROXY=true`.
+2. **Hospedagem** de um container Docker sempre ativo (Railway, Render, Fly.io, VPS). `Dockerfile` e `railway.json` prontos. Obrigatórias: `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` (e `APP_URL=https://seu-dominio` fora do Railway/Render). Passo a passo: [`docs/TELEGRAM.md` §4.2](docs/TELEGRAM.md#passo-a-passo).
    - Se o plano da hospedagem "dormir" quando não há acesso, as notificações não saem. Nesse caso defina `CRON_SECRET` e agende um cron externo: `POST https://seu-dominio/api/cron/run` com `Authorization: Bearer <CRON_SECRET>` a cada 15–30 min.
 3. As migrações rodam sozinhas ao iniciar (`npm run db:migrate` também funciona).
 4. **Primeiro acesso da família**: copie `family.example.json` para `family.json` (fora do git), coloque os e-mails reais e rode, com o `.env` de produção:

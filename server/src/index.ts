@@ -2,6 +2,7 @@ import { assertProductionConfig, loadConfig } from "./config.js";
 import { createApp } from "./app.js";
 import { createContext } from "./bootstrap.js";
 import { startScheduler } from "./notifications/jobs.js";
+import { prepareTelegram } from "./telegram/setup.js";
 
 async function main() {
   const config = loadConfig();
@@ -16,6 +17,7 @@ async function main() {
       telegram: config.telegram.enabled ? "ativo" : "desativado",
       ia: config.ai.enabled ? "ativa" : "desativada",
     });
+    void prepareTelegram(ctx);
   });
   const stop = config.schedulerEnabled ? startScheduler(ctx) : () => {};
   const shutdown = async (sig: string, code = 0) => {

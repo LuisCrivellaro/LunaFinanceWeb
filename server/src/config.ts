@@ -71,7 +71,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const botToken = env.TELEGRAM_BOT_TOKEN ?? "";
   const webhookSecret = env.TELEGRAM_WEBHOOK_SECRET ?? "";
   const aiKey = env.ANTHROPIC_API_KEY ?? "";
-  const appUrl = (env.APP_URL ?? "http://localhost:5173").replace(/\/$/, "");
+  // Railway e Render informam o domínio público sozinhos: APP_URL vira opcional nelas
+  const platformUrl = env.RAILWAY_PUBLIC_DOMAIN ? `https://${env.RAILWAY_PUBLIC_DOMAIN}` : env.RENDER_EXTERNAL_URL;
+  const appUrl = (env.APP_URL || platformUrl || "http://localhost:5173").replace(/\/$/, "");
   const cfg: Config = {
     env: nodeEnv,
     port: int(env.PORT, 3000),
@@ -111,7 +113,9 @@ export function assertProductionConfig(cfg: Config) {
   if (cfg.telegram.botToken && !cfg.telegram.webhookUrl.startsWith("https://"))
     problems.push("TELEGRAM_WEBHOOK_URL deve usar https://");
   if (cfg.telegram.botToken && cfg.telegram.webhookSecret.length < 32)
-    problems.push("TELEGRAM_WEBHOOK_SECRET deve ter pelo menos 32 caracteres");
+    problems.push("TELEGRAM_WEBHOOK_SECRET deve ter pelo menos 32 caracteres (gere com: openssl rand -hex 32)");
+  else if (cfg.telegram.botToken && !/^[A-Za-z0-9_-]{32,256}$/.test(cfg.telegram.webhookSecret))
+    problems.push("TELEGRAM_WEBHOOK_SECRET só pode ter A-Z, a-z, 0-9, _ e -");
   if (cfg.cronSecret && cfg.cronSecret.length < 32) problems.push("CRON_SECRET deve ter pelo menos 32 caracteres");
   if (problems.length) {
     throw new Error("Configuração inválida para produção:\n- " + problems.join("\n- "));

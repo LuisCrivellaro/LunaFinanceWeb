@@ -182,20 +182,21 @@ Vencimentos (1–7 dias antes, com botão “Marcar como paga”), contas atrasa
 3. Guarde o token **novo** direto no gerenciador de segredos da hospedagem.
 4. Opcional: `/setdescription`, `/setabouttext`, `/setuserpic`.
 
-### 4.2 Variáveis de ambiente (servidor)
-```
-NODE_ENV=production
-APP_URL=https://seu-dominio
-DATABASE_URL=postgresql://...
-TRUST_PROXY=true
-TELEGRAM_BOT_TOKEN=<token novo>
-TELEGRAM_BOT_USERNAME=LunaFinanceFamiliaBot
-TELEGRAM_WEBHOOK_SECRET=<openssl rand -hex 32>
-TELEGRAM_WEBHOOK_URL=            # opcional; padrão APP_URL/telegram/webhook
-CRON_SECRET=<openssl rand -hex 32>   # se a hospedagem "dormir"
-ANTHROPIC_API_KEY=               # opcional (IA)
-```
-O servidor **se recusa a iniciar** em produção com URL sem HTTPS ou segredos curtos.
+### 4.2 Publicar no Railway (caminho mais curto)
+1. Em railway.com: **New Project → Deploy from GitHub repo** → este repositório e a branch de trabalho. O `railway.json` já manda usar o `Dockerfile` e o health check `/healthz`.
+2. No mesmo projeto: **+ New → Database → PostgreSQL** (confira se o plano tem backup).
+3. No serviço do app → **Settings → Networking → Generate Domain**.
+4. No serviço do app → **Variables** — só três são obrigatórias:
+   ```
+   DATABASE_URL=${{Postgres.DATABASE_URL}}
+   TELEGRAM_BOT_TOKEN=<token do BotFather>
+   TELEGRAM_WEBHOOK_SECRET=<64 letras/números; ex.: openssl rand -hex 32>
+   ```
+   `APP_URL` vem do domínio do Railway (`RAILWAY_PUBLIC_DOMAIN`), `NODE_ENV=production` vem do Dockerfile e o @ do bot é descoberto sozinho. Opcionais: `CRON_SECRET`, `ANTHROPIC_API_KEY`, `APP_URL` (domínio próprio).
+5. Ao subir, o servidor **registra sozinho** o webhook e o menu de comandos (log `telegram.webhook_registrado` e `telegram.pronto`). Token errado/revogado aparece como `telegram.preparacao_falhou ... Unauthorized`.
+6. Abra `https://<domínio>/healthz` → `"ok":true` e `"telegram":{"configured":true`.
+
+Outra hospedagem: as mesmas variáveis + `APP_URL=https://seu-dominio` (no Render, `RENDER_EXTERNAL_URL` já resolve). O servidor **se recusa a iniciar** em produção sem banco, sem HTTPS ou com segredo fraco — a mensagem diz o que falta.
 
 ### 4.3 Banco de dados
 ```bash
@@ -206,6 +207,7 @@ npm run backup                 # SEMPRE antes de atualizar
 A migração 2 (`telegram_assistant`) só **adiciona** colunas/tabelas. Reversão: `npm run db:rollback -- --confirm` (e volte para a versão anterior do código antes de reiniciar o servidor).
 
 ### 4.4 Webhook
+Automático ao iniciar (e conferido a cada 10 min). Os scripts continuam disponíveis para diagnóstico:
 ```bash
 npm run telegram:set-webhook          # registra a URL + segredo + menu de comandos
 npm run telegram:webhook-info         # url correta, pending_update_count, last_error_message
