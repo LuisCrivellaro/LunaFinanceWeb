@@ -5,7 +5,7 @@
  *   npm run telegram:delete-webhook  → remove o webhook
  */
 import { loadConfig } from "../config.js";
-import { BOT_COMMANDS, createTelegramApi } from "../telegram/api.js";
+import { BOT_COMMANDS, createTelegramApi, registerWebhook } from "../telegram/api.js";
 
 const cfg = loadConfig();
 const mode = process.argv[2];
@@ -17,13 +17,7 @@ if (mode === "set") {
   if (!/^[A-Za-z0-9_-]{1,256}$/.test(cfg.telegram.webhookSecret)) throw new Error("TELEGRAM_WEBHOOK_SECRET só pode ter A-Z, a-z, 0-9, _ e -");
   const url = cfg.telegram.webhookUrl;
   if (!url.startsWith("https://")) throw new Error("A URL do webhook precisa ser https:// (exigência do Telegram). Ajuste TELEGRAM_WEBHOOK_URL ou APP_URL.");
-  await tg.call("setWebhook", {
-    url,
-    secret_token: cfg.telegram.webhookSecret,
-    allowed_updates: ["message", "callback_query"],
-    max_connections: 10,
-    drop_pending_updates: process.argv.includes("--drop-pending"),
-  });
+  await registerWebhook(tg, url, cfg.telegram.webhookSecret, process.argv.includes("--drop-pending"));
   await tg.call("setMyCommands", { commands: BOT_COMMANDS });
   const me = await tg.call<{ username: string }>("getMe");
   console.log(`Webhook registrado em ${url}`);

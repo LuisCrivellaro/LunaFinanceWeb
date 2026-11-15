@@ -75,7 +75,7 @@ export async function setupTestApp(opts: { now?: string; ai?: Assistant | null }
     ...loadConfig({ NODE_ENV: "test" } as NodeJS.ProcessEnv),
     databaseUrl: "pglite://memory",
     appUrl: "https://luna.test",
-    telegram: { botToken: "test", botUsername: "LunaFinanceTestBot", webhookSecret: WEBHOOK_SECRET, webhookUrl: "https://luna.test/telegram/webhook", enabled: true },
+    telegram: { botToken: "test", botUsername: "LunaFinanceTestBot", webhookSecret: WEBHOOK_SECRET, webhookUrl: "https://luna.test/telegram/webhook", enabled: true, webhookGuard: false },
     cronSecret: "cron-secret-0123456789abcdef0123456789",
     schedulerEnabled: false,
     loginRateMax: 10000,

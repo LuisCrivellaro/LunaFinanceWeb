@@ -771,6 +771,33 @@ describe("configurações e notificações", () => {
     expect(t.tg.sent.filter((s) => s.text?.includes("Internet rede"))).toHaveLength(1);
   });
 
+  it("webhook trocado ou removido por quem tem o token é detectado e restaurado", async () => {
+    const api = t.ctx.telegram!;
+    const realCall = api.call;
+    let current = "https://atacante.example/hook";
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    api.call = (async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params });
+      if (method === "getWebhookInfo") return { url: current };
+      if (method === "setWebhook") current = String(params!.url);
+      return true;
+    }) as typeof api.call;
+    t.ctx.config.telegram.webhookGuard = true;
+    try {
+      expect((await runScheduledJobs(t.ctx)).webhookRestored).toBe(1);
+      const set = calls.find((c) => c.method === "setWebhook")!;
+      expect(set.params).toMatchObject({ url: "https://luna.test/telegram/webhook", secret_token: WEBHOOK_SECRET });
+      calls.length = 0;
+      expect((await runScheduledJobs(t.ctx)).webhookRestored).toBe(0); // já está certo: só confere
+      expect(calls.map((c) => c.method)).toEqual(["getWebhookInfo"]);
+      current = "";
+      expect((await runScheduledJobs(t.ctx)).webhookRestored).toBe(1); // removido (para usar getUpdates)
+    } finally {
+      api.call = realCall;
+      t.ctx.config.telegram.webhookGuard = false;
+    }
+  });
+
   it("desvincular pelo bot pede confirmação e corta o acesso", async () => {
     await send(msg(TG.joao, "/desvincular"));
     await send(cb(TG.joao, button("Sim, desconectar")));

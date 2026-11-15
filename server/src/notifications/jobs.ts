@@ -9,7 +9,7 @@ import { addDays, currentMonth, localHour, localWeekday, monthNamePt, monthRange
 import { generateAllRecurrences } from "../services/transactions.js";
 import { monthTotals } from "../services/insights.js";
 import { brl, dt, esc, signed } from "../telegram/format.js";
-import { isPermanentTelegramError, type InlineButton } from "../telegram/api.js";
+import { isPermanentTelegramError, registerWebhook, type InlineButton } from "../telegram/api.js";
 
 interface LinkedUser {
   id: number;
@@ -241,11 +241,38 @@ export async function notifySummaries(ctx: AppContext, users: LinkedUser[], hour
   return sent;
 }
 
+/**
+ * Se o webhook registrado no Telegram não for o nosso (removido ou apontando para outro
+ * endereço — sinal de que alguém com o token tentou desviar as mensagens), registra de
+ * novo e deixa um alerta no log. Retorna true se precisou restaurar.
+ */
+export async function ensureWebhook(ctx: AppContext): Promise<boolean> {
+  const t = ctx.config.telegram;
+  if (!ctx.telegram || !t.enabled || !t.webhookGuard || !t.webhookUrl.startsWith("https://")) return false;
+  const info = await ctx.telegram.call<{ url?: string }>("getWebhookInfo");
+  if (info?.url === t.webhookUrl) return false;
+  let found = "(nenhum)";
+  try {
+    if (info?.url) found = new URL(info.url).host;
+  } catch {
+    found = "(inválido)";
+  }
+  ctx.log.error("telegram.webhook_alterado", { encontrado: found });
+  await registerWebhook(ctx.telegram, t.webhookUrl, t.webhookSecret);
+  ctx.log.warn("telegram.webhook_restaurado", {});
+  return true;
+}
+
 /** Ponto de entrada chamado pelo agendador interno ou por /api/cron/run. */
 export async function runScheduledJobs(ctx: AppContext, opts: { force?: boolean } = {}) {
   const result: Record<string, number> = {};
   result.recurrences = await generateAllRecurrences(ctx.db);
   if (!ctx.telegram) return { ...result, telegram: 0 };
+  try {
+    result.webhookRestored = (await ensureWebhook(ctx)) ? 1 : 0;
+  } catch (err) {
+    ctx.log.warn("telegram.webhook_verificacao_falhou", { err: (err as Error).message.slice(0, 160) });
+  }
   const hour = localHour();
   const weekday = localWeekday();
   const users = await linkedUsers(ctx);

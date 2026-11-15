@@ -53,6 +53,8 @@ export interface Config {
     /** URL pública completa do webhook (padrão: APP_URL + /telegram/webhook). */
     webhookUrl: string;
     enabled: boolean;
+    /** Confere o webhook a cada rodada do agendador e o restaura se alguém o trocar (padrão: só em produção). */
+    webhookGuard: boolean;
   };
   cronSecret: string;
   schedulerEnabled: boolean;
@@ -86,6 +88,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       webhookSecret,
       webhookUrl: (env.TELEGRAM_WEBHOOK_URL || `${appUrl}/telegram/webhook`).replace(/\/$/, ""),
       enabled: Boolean(botToken && webhookSecret),
+      webhookGuard: bool(env.TELEGRAM_WEBHOOK_GUARD, nodeEnv === "production"),
     },
     cronSecret: env.CRON_SECRET ?? "",
     schedulerEnabled: bool(env.SCHEDULER_ENABLED, nodeEnv !== "test"),

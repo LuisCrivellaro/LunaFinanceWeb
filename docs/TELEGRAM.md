@@ -166,6 +166,8 @@ Vencimentos (1–7 dias antes, com botão “Marcar como paga”), contas atrasa
 - **Resiliência**: Postgres com timeout de conexão e de consulta; Bot API com até 3 tentativas e backoff exponencial (e respeito ao `retry_after` do 429); exceções não tratadas são registradas — rejeições seguem, exceções reiniciam o processo de forma controlada (operações financeiras são atômicas, nada fica pela metade).
 - **Logs** estruturados em JSON com `op` (`tg-<update_id>`), usuário e duração — sem texto das mensagens, valores ou tokens.
 
+- **Vigia do webhook** (`TELEGRAM_WEBHOOK_GUARD`, ligado em produção): a cada rodada do agendador o servidor confere `getWebhookInfo`; se o webhook foi removido ou aponta para outro endereço, registra de novo e loga `telegram.webhook_alterado`. Isso limita (não elimina) o estrago de um token vazado: quem tem o token ainda pode mandar mensagens em nome do bot e desviar mensagens por até ~10 min.
+
 > ⚠️ **Token exposto anteriormente.** Considere-o comprometido. No @BotFather: `/mybots` → escolha o bot → **API Token** → **Revoke current token**. Use somente o token novo. (A busca no histórico deste repositório não encontrou token versionado — o vazamento ocorreu fora dele, mas a revogação é obrigatória do mesmo jeito.)
 
 ---
@@ -261,6 +263,7 @@ Cada linha é um JSON. Principais eventos:
 | `telegram.vinculado` | conta vinculada |
 | `ia.resposta` / `ia.proposta` / `ia.resposta_descartada` | uso da IA com tokens (e respostas bloqueadas pelo validador) |
 | `ia.timeout` / `ia.indisponivel` / `ia.falhou` | provedor de IA lento ou fora — bot segue sem IA |
+| `telegram.webhook_alterado` | **alerta**: webhook removido/trocado por terceiros — restaurado automaticamente; revogue o token |
 | `telegram.limite_mensagens` | pessoa excedeu o limite por minuto |
 | `processo.promessa_rejeitada` / `processo.excecao` | erro não tratado (investigar) |
 | `notificacao.falhou` | aviso não entregue (será tentado de novo) |

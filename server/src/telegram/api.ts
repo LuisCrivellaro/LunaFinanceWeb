@@ -173,3 +173,14 @@ export const BOT_COMMANDS = [
   { command: "configuracoes", description: "Preferências e avisos" },
   { command: "ajuda", description: "Como usar o bot" },
 ];
+
+/** Parâmetros únicos do setWebhook (usados pelo script e pela restauração automática). */
+export async function registerWebhook(tg: TelegramApi, url: string, secret: string, dropPending = false) {
+  await tg.call("setWebhook", {
+    url,
+    secret_token: secret,
+    allowed_updates: ["message", "callback_query"],
+    max_connections: 10,
+    drop_pending_updates: dropPending,
+  });
+}
