@@ -1,8 +1,11 @@
+import { useId } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { axisMoney, money, monthLong, monthShort, pct } from "../lib/format";
+import { axisMoney, money, monthLong, monthShort, pct, signedMoney } from "../lib/format";
 import type { CategorySlice, SeriesPoint } from "../lib/types";
+import { prefersReducedMotion } from "./ui";
 
-const axis = { stroke: "var(--ink-3)", fontSize: 12, tickLine: false, axisLine: false } as const;
+const tick = { fill: "var(--text-3)", fontSize: 11.5 } as const;
+const axis = { tick, tickLine: false, axisLine: false, tickMargin: 8 } as const;
 
 function Tip({ active, payload, label, rows }: { active?: boolean; payload?: Array<{ payload: SeriesPoint }>; label?: string; rows: "flow" | "balance" }) {
   if (!active || !payload?.length || !label) return null;
@@ -13,20 +16,20 @@ function Tip({ active, payload, label, rows }: { active?: boolean; payload?: Arr
       {rows === "flow" ? (
         <>
           <div className="r">
-            <span className="row" style={{ gap: 6 }}>
-              <i className="marker" style={{ background: "var(--income)" }} /> Receitas
+            <span>
+              <i className="marker income" /> Receitas
             </span>
             <b className="num">{money(p.incomeCents)}</b>
           </div>
           <div className="r">
-            <span className="row" style={{ gap: 6 }}>
-              <i className="marker" style={{ background: "var(--expense)" }} /> Despesas
+            <span>
+              <i className="marker expense" /> Despesas
             </span>
             <b className="num">{money(p.expenseCents)}</b>
           </div>
-          <div className="r" style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid var(--line)" }}>
+          <div className="r total">
             <span>Resultado</span>
-            <b className="num">{(p.resultCents >= 0 ? "+" : "−") + money(Math.abs(p.resultCents))}</b>
+            <b className="num">{signedMoney(p.resultCents)}</b>
           </div>
         </>
       ) : (
@@ -39,29 +42,41 @@ function Tip({ active, payload, label, rows }: { active?: boolean; payload?: Arr
   );
 }
 
-/** Receitas x despesas por mês (2 séries, legenda sempre visível). */
-export function FlowChart({ data, height = 240 }: { data: SeriesPoint[]; height?: number }) {
+/** Legenda das duas séries (sempre visível — cor nunca é a única pista). */
+export function FlowLegend() {
   return (
-    <div>
-      <div className="legend" style={{ marginBottom: 10 }}>
-        <span>
-          <i style={{ background: "var(--income)" }} /> Receitas
-        </span>
-        <span>
-          <i style={{ background: "var(--expense)" }} /> Despesas
-        </span>
-      </div>
+    <div className="legend">
+      <span>
+        <i style={{ background: "var(--viz-income)" }} /> Receitas
+      </span>
+      <span>
+        <i style={{ background: "var(--viz-expense)" }} /> Despesas
+      </span>
+    </div>
+  );
+}
+
+/** Receitas x despesas por mês. */
+export function FlowChart({ data, height = 240, legend = true }: { data: SeriesPoint[]; height?: number; legend?: boolean }) {
+  const empty = data.every((d) => !d.incomeCents && !d.expenseCents);
+  return (
+    <div className="stack" style={{ gap: 12 }}>
+      {legend && <FlowLegend />}
       <div style={{ width: "100%", height }} role="img" aria-label="Gráfico de receitas e despesas por mês. Os valores também aparecem na tabela do relatório.">
-        <ResponsiveContainer>
-          <BarChart data={data} barGap={2} barCategoryGap="28%" margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
-            <CartesianGrid vertical={false} stroke="var(--grid)" />
-            <XAxis dataKey="month" tickFormatter={monthShort} {...axis} />
-            <YAxis tickFormatter={(v) => axisMoney(v)} width={52} {...axis} />
-            <Tooltip content={<Tip rows="flow" />} cursor={{ fill: "color-mix(in oklab, var(--ink) 5%, transparent)" }} />
-            <Bar dataKey="incomeCents" name="Receitas" fill="var(--income)" radius={[4, 4, 0, 0]} maxBarSize={22} />
-            <Bar dataKey="expenseCents" name="Despesas" fill="var(--expense)" radius={[4, 4, 0, 0]} maxBarSize={22} />
-          </BarChart>
-        </ResponsiveContainer>
+        {empty ? (
+          <div className="chart-empty">Sem movimentações no período</div>
+        ) : (
+          <ResponsiveContainer>
+            <BarChart data={data} barGap={3} barCategoryGap="30%" margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+              <CartesianGrid vertical={false} stroke="var(--grid)" />
+              <XAxis dataKey="month" tickFormatter={monthShort} {...axis} />
+              <YAxis tickFormatter={(v) => axisMoney(v)} width={58} {...axis} />
+              <Tooltip content={<Tip rows="flow" />} cursor={{ fill: "var(--primary-softer)", radius: 8 } as object} />
+              <Bar isAnimationActive={!prefersReducedMotion()} animationDuration={500} dataKey="incomeCents" name="Receitas" fill="var(--viz-income)" radius={[6, 6, 2, 2]} maxBarSize={16} />
+              <Bar isAnimationActive={!prefersReducedMotion()} animationDuration={500} dataKey="expenseCents" name="Despesas" fill="var(--viz-expense)" radius={[6, 6, 2, 2]} maxBarSize={16} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
       </div>
     </div>
   );
@@ -69,21 +84,32 @@ export function FlowChart({ data, height = 240 }: { data: SeriesPoint[]; height?
 
 /** Evolução do patrimônio (uma série — o título nomeia, sem legenda). */
 export function BalanceChart({ data, height = 200 }: { data: Array<{ month: string; balanceCents: number }>; height?: number }) {
+  const id = useId().replace(/:/g, "");
+  if (!data.length) return <div className="chart-empty" style={{ height }}>Ainda sem histórico de saldo</div>;
   return (
     <div style={{ width: "100%", height }} role="img" aria-label="Evolução do saldo nos últimos 12 meses">
       <ResponsiveContainer>
-        <AreaChart data={data} margin={{ top: 6, right: 4, left: 0, bottom: 0 }}>
+        <AreaChart data={data} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
           <defs>
-            <linearGradient id="balFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="var(--seq)" stopOpacity={0.22} />
-              <stop offset="100%" stopColor="var(--seq)" stopOpacity={0} />
+            <linearGradient id={`bal${id}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--viz-primary)" stopOpacity={0.28} />
+              <stop offset="100%" stopColor="var(--viz-primary)" stopOpacity={0} />
             </linearGradient>
           </defs>
           <CartesianGrid vertical={false} stroke="var(--grid)" />
           <XAxis dataKey="month" tickFormatter={monthShort} {...axis} interval="preserveStartEnd" />
-          <YAxis tickFormatter={(v) => axisMoney(v)} width={52} {...axis} />
-          <Tooltip content={<Tip rows="balance" />} cursor={{ stroke: "var(--ink-3)", strokeDasharray: "3 3" }} />
-          <Area type="monotone" dataKey="balanceCents" stroke="var(--seq)" strokeWidth={2} fill="url(#balFill)" activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--surface)" }} />
+          <YAxis tickFormatter={(v) => axisMoney(v)} width={58} {...axis} />
+          <Tooltip content={<Tip rows="balance" />} cursor={{ stroke: "var(--primary-line)", strokeDasharray: "4 4" }} />
+          <Area
+            type="monotone"
+            isAnimationActive={!prefersReducedMotion()}
+            animationDuration={600}
+            dataKey="balanceCents"
+            stroke="var(--viz-primary)"
+            strokeWidth={2.25}
+            fill={`url(#bal${id})`}
+            activeDot={{ r: 5, strokeWidth: 3, stroke: "var(--surface)", fill: "var(--viz-primary)" }}
+          />
         </AreaChart>
       </ResponsiveContainer>
     </div>

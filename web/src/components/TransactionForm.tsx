@@ -120,20 +120,19 @@ export function TransactionForm({ initial, preset, onClose }: Props) {
           save.mutate();
         }}
       >
-        <div className="segmented kind" role="group" aria-label="Tipo" style={{ width: "100%" }}>
+        <div className="segmented kind fill" role="group" aria-label="Tipo">
           {(["expense", "income"] as const).map((k) => (
             <button
               type="button"
               key={k}
               data-kind={k}
               aria-pressed={kind === k}
-              style={{ flex: 1, justifyContent: "center" }}
               onClick={() => {
                 setKind(k);
                 setCategoryId("");
               }}
             >
-              <i className="marker" style={{ background: k === "income" ? "var(--income)" : "var(--expense)" }} />
+              <i className={`marker ${k}`} />
               {k === "income" ? "Receita" : "Despesa"}
             </button>
           ))}
@@ -189,7 +188,7 @@ export function TransactionForm({ initial, preset, onClose }: Props) {
         <div className="grid grid-2">
           <div className="field">
             <span>Situação</span>
-            <div className="segmented" role="group" aria-label="Situação">
+            <div className="segmented fill" role="group" aria-label="Situação">
               <button type="button" aria-pressed={status === "paid"} onClick={() => setStatus("paid")}>
                 {kind === "income" ? "Recebido" : "Pago"}
               </button>
@@ -200,7 +199,7 @@ export function TransactionForm({ initial, preset, onClose }: Props) {
           </div>
           <div className="field">
             <span>Natureza</span>
-            <div className="segmented" role="group" aria-label="Natureza">
+            <div className="segmented fill" role="group" aria-label="Natureza">
               <button type="button" aria-pressed={nature === "variable"} onClick={() => setNature("variable")}>
                 Variável
               </button>
@@ -214,7 +213,7 @@ export function TransactionForm({ initial, preset, onClose }: Props) {
         {!editing && (
           <div className="field">
             <span>Repetição</span>
-            <div className="segmented" role="group" aria-label="Repetição">
+            <div className="segmented fill" role="group" aria-label="Repetição">
               <button type="button" aria-pressed={mode === "single"} onClick={() => setMode("single")}>
                 Única
               </button>
@@ -251,7 +250,7 @@ export function TransactionForm({ initial, preset, onClose }: Props) {
               <span>Termina em (opcional)</span>
               <input className="input" type="date" value={endDate} min={date} onChange={(e) => setEndDate(e.target.value)} />
             </label>
-            <label className="check" style={{ alignSelf: "end", minHeight: 42 }}>
+            <label className="check" style={{ alignSelf: "end", minHeight: 40 }}>
               <input type="checkbox" checked={autoPaid} onChange={(e) => setAutoPaid(e.target.checked)} />
               Marcar como {kind === "income" ? "recebido" : "pago"} automaticamente
             </label>

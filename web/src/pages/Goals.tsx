@@ -7,7 +7,8 @@ import { centsToInput, dateFull, firstName, money, parseCents, todayIso } from "
 import type { Goal } from "../lib/types";
 import { Avatar, CardSkeleton, Empty, ErrorState, Modal, MoonPhase } from "../components/ui";
 
-const GOAL_COLORS = ["#a87a32", "#2a78d6", "#1baf7a", "#6250d6", "#eb6834"];
+/** Tons que funcionam nos dois temas (metas antigas mantêm a cor salva). */
+const GOAL_COLORS = ["#b47cf0", "#4fb894", "#5b8fe8", "#e0a23e", "#e4707e"];
 
 function GoalForm({ goal, onClose }: { goal?: Goal; onClose(): void }) {
   const { toast } = useApp();
@@ -50,7 +51,7 @@ function GoalForm({ goal, onClose }: { goal?: Goal; onClose(): void }) {
       {!goal && canFamily && (
         <div className="field">
           <span>De quem é a meta</span>
-          <div className="segmented" role="group">
+          <div className="segmented fill" role="group" aria-label="De quem é a meta">
             <button type="button" aria-pressed={scope === "individual"} onClick={() => setScope("individual")}>Minha</button>
             <button type="button" aria-pressed={scope === "family"} onClick={() => setScope("family")}>Da família</button>
           </div>
@@ -81,13 +82,13 @@ function GoalForm({ goal, onClose }: { goal?: Goal; onClose(): void }) {
       )}
       <div className="field">
         <span>Cor</span>
-        <div className="row">
-          {GOAL_COLORS.map((c) => (
-            <button key={c} type="button" aria-label={`Cor ${c}`} aria-pressed={color === c} onClick={() => setColor(c)} style={{ width: 30, height: 30, borderRadius: "50%", background: c, border: color === c ? "3px solid var(--ink)" : "3px solid transparent", cursor: "pointer" }} />
+        <div className="swatches">
+          {GOAL_COLORS.map((c, i) => (
+            <button key={c} type="button" className="swatch" aria-label={`Cor ${i + 1}`} aria-pressed={color === c} onClick={() => setColor(c)} style={{ ["--c" as string]: c }} />
           ))}
         </div>
       </div>
-      {save.error && <div className="alert bad">{save.error.message}</div>}
+      {save.error && <div className="alert bad" role="alert">{save.error.message}</div>}
     </Modal>
   );
 }
@@ -125,16 +126,19 @@ function ContributeForm({ goal, onClose }: { goal: Goal; onClose(): void }) {
   });
   return (
     <Modal title={goal.name} onClose={onClose}>
-      <div className="row" style={{ gap: 16 }}>
+      <div className="goal-summary">
         <MoonPhase percent={goal.percent} size={64} color={goal.color} />
-        <div>
-          <div className="num" style={{ fontSize: 26 }}>{money(goal.savedCents)}</div>
-          <div className="muted">de {money(goal.targetCents)} · {Math.round(goal.percent)}%</div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div className="num goal-amount">{money(goal.savedCents)}</div>
+          <div className="muted" style={{ fontSize: 13 }}>de {money(goal.targetCents)} · {Math.round(goal.percent)}%</div>
+          <div className="progress" style={{ ["--c" as string]: goal.color, marginTop: 10 }} aria-hidden>
+            <i style={{ width: `${Math.min(100, goal.percent)}%` }} />
+          </div>
         </div>
       </div>
-      <div className="segmented" role="group" style={{ width: "100%" }}>
-        <button type="button" style={{ flex: 1, justifyContent: "center" }} aria-pressed={mode === "in"} onClick={() => setMode("in")}><Plus size={15} /> Guardar</button>
-        <button type="button" style={{ flex: 1, justifyContent: "center" }} aria-pressed={mode === "out"} onClick={() => setMode("out")}><Minus size={15} /> Retirar</button>
+      <div className="segmented fill" role="group" aria-label="Operação">
+        <button type="button" aria-pressed={mode === "in"} onClick={() => setMode("in")}><Plus size={15} /> Guardar</button>
+        <button type="button" aria-pressed={mode === "out"} onClick={() => setMode("out")}><Minus size={15} /> Retirar</button>
       </div>
       <form
         className="stack"
@@ -148,11 +152,11 @@ function ContributeForm({ goal, onClose }: { goal: Goal; onClose(): void }) {
           <input className="input" inputMode="decimal" placeholder="0,00" value={amount} onChange={(e) => setAmount(e.target.value)} aria-label="Valor" />
         </div>
         <input className="input" placeholder="Observação (opcional)" maxLength={120} value={note} onChange={(e) => setNote(e.target.value)} />
-        {save.error && <div className="alert bad">{save.error.message}</div>}
+        {save.error && <div className="alert bad" role="alert">{save.error.message}</div>}
         <button className="btn btn-primary" disabled={save.isPending}>{mode === "in" ? "Registrar contribuição" : "Registrar retirada"}</button>
       </form>
       <div>
-        <h3 style={{ marginBottom: 6 }}>Histórico</h3>
+        <p className="eyebrow" style={{ marginBottom: 4 }}>Histórico</p>
         {history.data?.length ? (
           <div className="list">
             {history.data.map((c) => {
@@ -161,11 +165,11 @@ function ContributeForm({ goal, onClose }: { goal: Goal; onClose(): void }) {
                 <div className="list-item" key={c.id}>
                   {who ? <Avatar name={who.name} color={who.color} size="sm" /> : <span />}
                   <div style={{ minWidth: 0 }}>
-                    <div className="title" style={{ fontWeight: 550 }}>{c.note || (c.amountCents > 0 ? "Contribuição" : "Retirada")}</div>
+                    <div className="title">{c.note || (c.amountCents > 0 ? "Contribuição" : "Retirada")}</div>
                     <div className="sub">{dateFull(c.date)} · {who ? firstName(who.name) : ""}</div>
                   </div>
                   <div className="row" style={{ gap: 6 }}>
-                    <span className="num">{(c.amountCents > 0 ? "+" : "−") + money(Math.abs(c.amountCents))}</span>
+                    <span className={`num ${c.amountCents > 0 ? "is-income" : ""}`}>{(c.amountCents > 0 ? "+" : "−") + money(Math.abs(c.amountCents))}</span>
                     {c.userId === me?.id && (
                       <button className="btn btn-ghost icon-btn" aria-label="Excluir contribuição" onClick={() => window.confirm("Excluir esta contribuição?") && remove.mutate(c.id)}>
                         <Trash2 size={15} />
@@ -213,7 +217,11 @@ export function GoalsPage() {
         <div>
           <p className="eyebrow">Planejamento</p>
           <h1>Metas</h1>
-          {list.length > 0 && <p>{money(totalSaved)} guardados de {money(totalTarget)}</p>}
+          {list.length > 0 && (
+            <p>
+              <b className="num" style={{ color: "var(--text)" }}>{money(totalSaved)}</b> guardados de <span className="tnum">{money(totalTarget)}</span>
+            </p>
+          )}
         </div>
         <div className="toolbar">
           <div className="segmented" role="group" aria-label="Filtro">
@@ -230,7 +238,7 @@ export function GoalsPage() {
         <div className="grid grid-3"><CardSkeleton /><CardSkeleton /><CardSkeleton /></div>
       ) : list.length === 0 ? (
         <div className="card">
-          <Empty icon={<Target size={30} />} title="Nenhuma meta por aqui" text="Defina um objetivo — reserva de emergência, viagem, um curso — e acompanhe a lua encher." action={<button className="btn btn-primary btn-sm" onClick={() => setCreating(true)}><Plus size={15} /> Criar meta</button>} />
+          <Empty icon={<Target size={22} />} title="Nenhuma meta por aqui" text="Defina um objetivo — reserva de emergência, viagem, um curso — e acompanhe a lua encher." action={<button className="btn btn-primary btn-sm" onClick={() => setCreating(true)}><Plus size={15} /> Criar meta</button>} />
         </div>
       ) : (
         <div className="grid grid-3 reveal">
@@ -238,41 +246,43 @@ export function GoalsPage() {
             const mine = g.ownerId === me?.id;
             const canContribute = g.scope === "family" || mine;
             return (
-              <article className="card stack" key={g.id} style={{ gap: 14 }}>
-                <div className="row between" style={{ alignItems: "flex-start" }}>
+              <article className="card goal-card" key={g.id} style={{ ["--c" as string]: g.color }}>
+                <div className="goal-card-top">
                   <div style={{ minWidth: 0 }}>
-                    <div className="row" style={{ gap: 8, marginBottom: 4 }}>
-                      {g.scope === "family" ? <span className="chip">Família</span> : <span className="chip">Individual</span>}
-                      {g.achievedAt && <span className="chip ok">Atingida</span>}
+                    <div className="row" style={{ gap: 6, marginBottom: 8 }}>
+                      {g.scope === "family" ? <span className="chip primary">Família</span> : <span className="chip">Individual</span>}
+                      {g.achievedAt && <span className="chip lime">Atingida</span>}
                     </div>
-                    <h2 style={{ fontSize: 19 }}>{g.name}</h2>
+                    <h2 className="goal-name">{g.name}</h2>
                   </div>
-                  <MoonPhase percent={g.percent} size={56} color={g.color} />
+                  <MoonPhase percent={g.percent} size={60} color={g.color} />
                 </div>
                 <div>
-                  <div className="num" style={{ fontSize: 26 }}>{money(g.savedCents)}</div>
-                  <div className="muted" style={{ fontSize: 13.5 }}>de {money(g.targetCents)}</div>
+                  <div className="num goal-amount">{money(g.savedCents)}</div>
+                  <div className="muted" style={{ fontSize: 13 }}>de <span className="tnum">{money(g.targetCents)}</span></div>
                 </div>
-                <div className="progress" style={{ ["--c" as string]: g.color }} role="progressbar" aria-valuenow={Math.round(g.percent)} aria-valuemin={0} aria-valuemax={100}>
-                  <i style={{ width: `${g.percent}%` }} />
+                <div className="progress lg" role="progressbar" aria-label={`Progresso de ${g.name}`} aria-valuenow={Math.round(g.percent)} aria-valuemin={0} aria-valuemax={100}>
+                  <i style={{ width: `${Math.min(100, g.percent)}%` }} />
                 </div>
                 <div className="row between" style={{ fontSize: 13 }}>
                   <span className="tnum"><b>{Math.round(g.percent)}%</b> concluído</span>
                   <span className="faint">{g.deadline ? `até ${dateFull(g.deadline)}` : "sem prazo"}</span>
                 </div>
                 {g.monthlyNeededCents && !g.achievedAt && (
-                  <div className="alert info" style={{ fontSize: 13 }}><span>Guardando <b className="num">{money(g.monthlyNeededCents)}</b> por mês você chega lá no prazo.</span></div>
+                  <div className="alert info"><span>Guardando <b className="num">{money(g.monthlyNeededCents)}</b> por mês você chega lá no prazo.</span></div>
                 )}
                 {g.scope === "family" && g.contributors.length > 0 && (
                   <div className="row" style={{ gap: 6 }}>
-                    {g.contributors.map((c) => {
-                      const m = lookup(c.userId);
-                      return m ? <Avatar key={c.userId} name={m.name} color={m.color} size="sm" /> : null;
-                    })}
+                    <span className="avatar-stack">
+                      {g.contributors.map((c) => {
+                        const m = lookup(c.userId);
+                        return m ? <Avatar key={c.userId} name={m.name} color={m.color} size="sm" /> : null;
+                      })}
+                    </span>
                     <span className="faint" style={{ fontSize: 12.5 }}>contribuíram</span>
                   </div>
                 )}
-                <div className="row" style={{ marginTop: "auto" }}>
+                <div className="goal-actions">
                   {canContribute && <button className="btn btn-sm" onClick={() => setOpen(g)}><Plus size={14} /> Contribuir</button>}
                   {mine && (
                     <>

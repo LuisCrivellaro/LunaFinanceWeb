@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, ArrowRight, Lock, ShieldCheck } from "lucide-react";
 import { post } from "../lib/api";
 import { LunaMark } from "../components/Layout";
 
@@ -8,16 +9,34 @@ function AuthFrame({ children }: { children: React.ReactNode }) {
   return (
     <div className="auth">
       <section className="auth-art" aria-hidden>
-        <div className="row">
-          <LunaMark size={34} />
-          <span className="brand-name" style={{ color: "#eee6d2" }}>
-            Luna <em style={{ color: "#d9b36c" }}>Finance</em>
+        <div className="row" style={{ gap: 12 }}>
+          <LunaMark size={36} />
+          <span className="brand-name">
+            Luna <span>Finance</span>
           </span>
         </div>
-        <div className="moon" />
-        <blockquote>
-          As finanças da casa, <em>em ordem</em> e à vista de quem importa.
-        </blockquote>
+        <svg className="auth-moon" viewBox="0 0 600 600">
+          <defs>
+            <radialGradient id="authGlow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#c48aff" stopOpacity="0.28" />
+              <stop offset="100%" stopColor="#c48aff" stopOpacity="0" />
+            </radialGradient>
+            <linearGradient id="authCrescent" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="#e6ccff" />
+              <stop offset="100%" stopColor="#8f5ad6" />
+            </linearGradient>
+          </defs>
+          <circle cx="300" cy="300" r="290" fill="url(#authGlow)" />
+          <circle cx="300" cy="300" r="250" fill="none" stroke="#c48aff" strokeOpacity="0.1" />
+          <circle cx="300" cy="300" r="190" fill="none" stroke="#c48aff" strokeOpacity="0.14" />
+          <path d="M318 150a150 150 0 1 0 0 300a178 178 0 0 1 0-300z" fill="url(#authCrescent)" fillOpacity="0.92" />
+        </svg>
+        <div className="auth-copy">
+          <p className="eyebrow">Finanças da família</p>
+          <p className="auth-quote">
+            O dinheiro da casa, <span>claro como a lua cheia</span> — para quem divide a mesma rotina.
+          </p>
+        </div>
       </section>
       <section className="auth-form">{children}</section>
     </div>
@@ -45,9 +64,13 @@ export function LoginPage() {
           login.mutate();
         }}
       >
-        <div>
+        <div className="auth-mobile-brand">
+          <LunaMark size={34} />
+        </div>
+        <div className="auth-head">
           <p className="eyebrow">Acesso da família</p>
           <h1>Bem-vindo de volta</h1>
+          <p className="muted">Entre com o seu e-mail e a sua senha pessoal.</p>
         </div>
         <label className="field">
           <span>E-mail</span>
@@ -59,14 +82,16 @@ export function LoginPage() {
         </label>
         {login.error && (
           <div className="alert bad" role="alert">
+            <AlertTriangle size={16} aria-hidden />
             {login.error.message}
           </div>
         )}
-        <button className="btn btn-primary" style={{ height: 46 }} disabled={login.isPending}>
+        <button className="btn btn-primary btn-lg" disabled={login.isPending}>
           {login.isPending ? "Entrando…" : "Entrar"}
+          {!login.isPending && <ArrowRight size={16} aria-hidden />}
         </button>
-        <p className="faint" style={{ fontSize: 13, margin: 0 }}>
-          Esqueceu a senha? Peça um novo link de acesso para a família — ele chega só para você.
+        <p className="auth-note">
+          <Lock size={14} aria-hidden /> Esqueceu a senha? Peça um novo link de acesso para a família — ele chega só para você.
         </p>
       </form>
     </AuthFrame>
@@ -102,18 +127,29 @@ export function SetPasswordPage() {
           save.mutate();
         }}
       >
+        <div className="auth-mobile-brand">
+          <LunaMark size={34} />
+        </div>
         {!token || info.error ? (
           <>
-            <h1>Link inválido</h1>
-            <div className="alert bad">{info.error?.message ?? "Este link de acesso está incompleto."}</div>
+            <div className="auth-head">
+              <p className="eyebrow">Link de acesso</p>
+              <h1>Link inválido</h1>
+            </div>
+            <div className="alert bad" role="alert">
+              <AlertTriangle size={16} aria-hidden />
+              {info.error?.message ?? "Este link de acesso está incompleto."}
+            </div>
+            <p className="auth-note">Peça um novo link para a família. Cada link é pessoal, de uso único e expira em pouco tempo.</p>
           </>
         ) : (
           <>
-            <div>
+            <div className="auth-head">
               <p className="eyebrow">{info.data?.purpose === "reset" ? "Nova senha" : "Primeiro acesso"}</p>
               <h1>{info.data ? `Olá, ${info.data.name}` : "Olá"}</h1>
               <p className="muted">Crie uma senha pessoal. Ela é só sua — ninguém da família consegue vê-la.</p>
             </div>
+            {info.isLoading && <div className="skeleton" style={{ height: 12, width: "60%" }} aria-hidden />}
             <label className="field">
               <span>Nova senha</span>
               <input className="input" type="password" autoComplete="new-password" minLength={10} required value={password} onChange={(e) => setPassword(e.target.value)} />
@@ -121,16 +157,28 @@ export function SetPasswordPage() {
             </label>
             <label className="field">
               <span>Confirme a senha</span>
-              <input className="input" type="password" autoComplete="new-password" required value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+              <input
+                className="input"
+                type="password"
+                autoComplete="new-password"
+                required
+                value={confirm}
+                aria-invalid={confirm.length > 0 && confirm !== password}
+                onChange={(e) => setConfirm(e.target.value)}
+              />
             </label>
             {save.error && (
               <div className="alert bad" role="alert">
+                <AlertTriangle size={16} aria-hidden />
                 {save.error.message}
               </div>
             )}
-            <button className="btn btn-primary" style={{ height: 46 }} disabled={save.isPending || !info.data}>
+            <button className="btn btn-primary btn-lg" disabled={save.isPending || !info.data}>
               {save.isPending ? "Salvando…" : "Salvar e entrar"}
             </button>
+            <p className="auth-note">
+              <ShieldCheck size={14} aria-hidden /> Depois de salvar, este link deixa de funcionar.
+            </p>
           </>
         )}
       </form>

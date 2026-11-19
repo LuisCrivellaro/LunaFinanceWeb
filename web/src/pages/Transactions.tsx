@@ -95,14 +95,12 @@ export function TransactionsPage() {
         </div>
       </div>
 
-      <div className="card stack" style={{ gap: 12, marginBottom: 16 }}>
-        <div className="row wrap" style={{ gap: 10 }}>
-          <label className="field" style={{ flex: "1 1 240px" }}>
+      <div className="card filters">
+        <div className="filters-row">
+          <label className="search">
             <span className="sr-only">Pesquisar</span>
-            <div style={{ position: "relative" }}>
-              <Search size={16} style={{ position: "absolute", left: 12, top: 13, color: "var(--ink-3)" }} aria-hidden />
-              <input className="input" style={{ paddingLeft: 36 }} placeholder="Pesquisar descrição, categoria ou observação" value={search} onChange={(e) => setSearch(e.target.value)} />
-            </div>
+            <Search size={16} aria-hidden />
+            <input className="input" placeholder="Pesquisar descrição, categoria ou observação" value={search} onChange={(e) => setSearch(e.target.value)} />
           </label>
           <div className="segmented" role="group" aria-label="Período">
             <button aria-label="Mês anterior" onClick={() => setMonth(shiftYm(month === "all" ? currentYm() : month, -1))}>
@@ -119,7 +117,7 @@ export function TransactionsPage() {
             </button>
           </div>
         </div>
-        <div className="row wrap" style={{ gap: 10 }}>
+        <div className="filters-row">
           <div className="segmented" role="group" aria-label="Tipo">
             {(["", "expense", "income"] as const).map((k) => (
               <button key={k} aria-pressed={kind === k} onClick={() => { setKind(k); setCategoryId(""); }}>
@@ -127,13 +125,13 @@ export function TransactionsPage() {
               </button>
             ))}
           </div>
-          <select className="select" style={{ width: "auto", height: 38 }} aria-label="Situação" value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
+          <select className="select select-inline" aria-label="Situação" value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
             <option value="">Qualquer situação</option>
             <option value="paid">Pagas / recebidas</option>
             <option value="pending">Pendentes</option>
             <option value="overdue">Atrasadas</option>
           </select>
-          <select className="select" style={{ width: "auto", height: 38, maxWidth: "100%" }} aria-label="Categoria" value={categoryId} onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : "")}>
+          <select className="select select-inline" aria-label="Categoria" value={categoryId} onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : "")}>
             <option value="">Todas as categorias</option>
             {cats.map((c) => (
               <option key={c.id} value={c.id}>
@@ -142,14 +140,12 @@ export function TransactionsPage() {
             ))}
           </select>
           {list.data && (
-            <div className="row" style={{ marginLeft: "auto", gap: 14, fontSize: 13.5 }}>
-              <span className="row" style={{ gap: 6 }}>
-                <i className="marker" style={{ background: "var(--income)" }} />
-                <span className="num">{money(list.data.sums.incomeCents)}</span>
+            <div className="sums" aria-label="Totais filtrados">
+              <span>
+                <i className="marker income" /> Entradas <b className="num">{money(list.data.sums.incomeCents)}</b>
               </span>
-              <span className="row" style={{ gap: 6 }}>
-                <i className="marker" style={{ background: "var(--expense)" }} />
-                <span className="num">{money(list.data.sums.expenseCents)}</span>
+              <span>
+                <i className="marker expense" /> Saídas <b className="num">{money(list.data.sums.expenseCents)}</b>
               </span>
             </div>
           )}
@@ -158,16 +154,16 @@ export function TransactionsPage() {
 
       {list.error && <ErrorState error={list.error} retry={() => list.refetch()} />}
 
-      <div className="card" style={{ paddingTop: 4 }}>
+      <div className="card tx-card">
         {list.isLoading ? (
-          <div className="stack" style={{ paddingTop: 16 }}>
+          <div className="stack" style={{ gap: 10 }}>
             {Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} h={44} />
             ))}
           </div>
         ) : !list.data?.items.length ? (
           <Empty
-            icon={<ReceiptText size={30} />}
+            icon={<ReceiptText size={22} />}
             title="Nenhuma movimentação encontrada"
             text={search || kind || status || categoryId ? "Tente ajustar os filtros." : "Registre a primeira receita ou despesa — pelo site ou pelo Telegram."}
             action={
@@ -215,17 +211,14 @@ export function TransactionsPage() {
                           )}
                         </div>
                       </div>
-                      <span className="amount row" style={{ gap: 8 }}>
-                        <i className="marker" style={{ background: t.kind === "income" ? "var(--income)" : "var(--expense)" }} aria-hidden />
-                        <Money cents={t.amountCents} kind={t.kind} />
-                      </span>
+                      <Money cents={t.amountCents} kind={t.kind} className={`amount ${t.kind === "income" ? "is-income" : ""}`} />
                     </div>
                   );
                 })}
               </section>
             ))}
             {pages > 1 && (
-              <div className="row between" style={{ paddingTop: 14 }}>
+              <div className="pager">
                 <button className="btn btn-sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
                   Anterior
                 </button>

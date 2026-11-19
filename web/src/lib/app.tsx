@@ -38,7 +38,7 @@ interface AppState {
 const Ctx = createContext<AppState | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(() => readLocal("luna.theme", "system") as Theme);
+  const [theme, setThemeState] = useState<Theme>(() => readLocal("luna.theme", "dark") as Theme);
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
   const [view, setViewState] = useState<View>(() => {
     const v = readLocal("luna.view", "me");

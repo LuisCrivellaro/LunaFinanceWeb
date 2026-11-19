@@ -1,19 +1,31 @@
-import { Suspense } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router";
+import { Suspense, useEffect, useId, useRef, useState } from "react";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BarChart3, CalendarClock, LayoutDashboard, LogOut, Moon, Plus, ReceiptText, Settings, Sun, Target } from "lucide-react";
+import {
+  BarChart3, CalendarClock, ChevronDown, ChevronRight, LayoutDashboard, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Plus,
+  ReceiptText, Settings, Sun, Target,
+} from "lucide-react";
 import { get, post } from "../lib/api";
-import { useApp, useMe } from "../lib/app";
+import { useApp, useMe, useMemberLookup } from "../lib/app";
 import { firstName, memberColor } from "../lib/format";
+import type { Me } from "../lib/types";
 import { Avatar } from "./ui";
 import { TransactionForm } from "./TransactionForm";
 
+/** Marca: crescente lunar recortado num quadrado lavanda. */
 export function LunaMark({ size = 30 }: { size?: number }) {
+  const id = useId().replace(/:/g, "");
   return (
     <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden>
-      <rect width="64" height="64" rx="18" fill="var(--accent)" />
-      <path d="M40 14a20 20 0 1 0 10 34A16 16 0 0 1 40 14z" fill="var(--accent-ink)" />
-      <circle cx="46" cy="20" r="2.4" fill="var(--brass)" />
+      <defs>
+        <linearGradient id={`lm${id}`} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#dcb8ff" />
+          <stop offset="1" stopColor="#9a66e0" />
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="18" fill={`url(#lm${id})`} />
+      <path d="M38 15a18 18 0 1 0 12 31A15 15 0 0 1 38 15z" fill="#140a22" />
+      <circle cx="46.5" cy="19.5" r="2.2" fill="#140a22" />
     </svg>
   );
 }
@@ -26,11 +38,116 @@ const NAV = [
   { to: "/relatorios", label: "Relatórios", short: "Relatórios", icon: BarChart3 },
 ];
 
+const TITLES: Record<string, string> = {
+  "/": "Painel",
+  "/movimentacoes": "Movimentações",
+  "/contas": "Contas a pagar",
+  "/metas": "Metas",
+  "/relatorios": "Relatórios",
+  "/configuracoes": "Configurações",
+};
+/** Páginas em que a visão (eu/família/pessoa) muda o conteúdo. */
+const VIEW_PAGES = new Set(["/", "/movimentacoes", "/contas", "/relatorios"]);
+
+function readCollapsed() {
+  try {
+    return localStorage.getItem("luna.sidebar") === "collapsed";
+  } catch {
+    return false;
+  }
+}
+function writeCollapsed(v: boolean) {
+  try {
+    localStorage.setItem("luna.sidebar", v ? "collapsed" : "expanded");
+  } catch {
+    /* modo privado */
+  }
+}
+
+function UserMenu({ me, color, onLogout }: { me: Me; color: string; onLogout(): void }) {
+  const { dark, setTheme } = useApp();
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menuId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    const items = () => Array.from(wrap.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+    items()[0]?.focus();
+    const onDown = (e: MouseEvent) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        trigger.current?.focus();
+      }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const list = items();
+        const i = list.indexOf(document.activeElement as HTMLElement);
+        const next = e.key === "ArrowDown" ? (i + 1) % list.length : (i - 1 + list.length) % list.length;
+        list[next]?.focus();
+      }
+      if (e.key === "Tab") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="menu-wrap" ref={wrap}>
+      <button
+        ref={trigger}
+        className="menu-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        aria-label={`Menu de ${firstName(me.name)}`}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Avatar name={me.name} color={color} />
+        <span className="hide-mobile">{firstName(me.name)}</span>
+        <ChevronDown size={15} aria-hidden />
+      </button>
+      {open && (
+        <div className="menu" role="menu" id={menuId} aria-label="Conta">
+          <div className="menu-head">
+            <Avatar name={me.name} color={color} />
+            <div>
+              <b>{me.name}</b>
+              <small>{me.email}</small>
+            </div>
+          </div>
+          <Link role="menuitem" to="/configuracoes" onClick={() => setOpen(false)}>
+            <Settings size={16} aria-hidden /> Configurações
+          </Link>
+          <button role="menuitem" onClick={() => setTheme(dark ? "light" : "dark")}>
+            {dark ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />} {dark ? "Usar tema claro" : "Usar tema escuro"}
+          </button>
+          <hr />
+          <button role="menuitem" className="danger" onClick={onLogout}>
+            <LogOut size={16} aria-hidden /> Sair
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Layout() {
   const { data: me } = useMe();
-  const { dark, setTheme, newTxPreset, openNewTransaction, closeNewTransaction } = useApp();
+  const { dark, setTheme, view, newTxPreset, openNewTransaction, closeNewTransaction } = useApp();
+  const lookup = useMemberLookup();
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const [collapsed, setCollapsed] = useState(readCollapsed);
   // contador discreto de contas atrasadas (só as próprias)
   const { data: bills } = useQuery({ queryKey: ["bills", "me", "badge"], queryFn: () => get<{ overdue: unknown[] }>("/bills?view=me"), staleTime: 60_000 });
   const overdue = bills?.overdue.length ?? 0;
@@ -43,67 +160,82 @@ export function Layout() {
     },
   });
 
-  const color = me ? memberColor(me.color, dark) : "var(--viz-1)";
+  const toggleCollapsed = () => {
+    setCollapsed((c) => {
+      writeCollapsed(!c);
+      return !c;
+    });
+  };
+
+  const color = me ? memberColor(me.color, dark) : "var(--primary)";
+  const title = TITLES[pathname] ?? "Luna Finance";
+  const viewLabel = view === "me" ? "Visão individual" : view === "family" ? "Visão da família" : `Visão de ${firstName(lookup(view)?.name ?? "integrante")}`;
 
   return (
-    <div className="shell">
+    <div className={`shell ${collapsed ? "is-collapsed" : ""}`}>
       <aside className="sidebar">
-        <NavLink to="/" className="brand">
-          <LunaMark />
+        <NavLink to="/" className="brand" aria-label="Luna Finance — painel">
+          <LunaMark size={32} />
           <span className="brand-name">
-            Luna <em>Finance</em>
+            Luna <span>Finance</span>
           </span>
         </NavLink>
-        <button className="btn btn-primary" onClick={() => openNewTransaction()}>
-          <Plus size={17} /> Nova movimentação
+        <button className="btn btn-primary" data-tip="Nova movimentação" onClick={() => openNewTransaction()}>
+          <Plus size={17} aria-hidden /> <span className="nav-label">Nova movimentação</span>
         </button>
         <nav className="nav" aria-label="Principal">
+          <p className="nav-title">Menu</p>
           {NAV.map((n) => (
-            <NavLink key={n.to} to={n.to} end={n.end}>
-              <n.icon size={18} strokeWidth={1.8} />
-              {n.label}
-              {n.to === "/contas" && overdue > 0 && <span className="nav-badge" aria-label={`${overdue} atrasadas`}>{overdue}</span>}
+            <NavLink key={n.to} to={n.to} end={n.end} data-tip={n.label}>
+              <n.icon size={18} strokeWidth={1.8} aria-hidden />
+              <span className="nav-label">{n.label}</span>
+              {n.to === "/contas" && overdue > 0 && (
+                <span className="nav-badge" aria-label={`${overdue} atrasadas`}>
+                  {overdue}
+                </span>
+              )}
             </NavLink>
           ))}
-          <NavLink to="/configuracoes">
-            <Settings size={18} strokeWidth={1.8} />
-            Configurações
-          </NavLink>
         </nav>
         <div className="sidebar-foot">
-          {me && (
-            <div className="row" style={{ padding: "0 8px" }}>
-              <Avatar name={me.name} color={color} />
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontWeight: 650, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{me.name}</div>
-                <div className="faint" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis" }}>{me.email}</div>
-              </div>
-              <button className="btn btn-ghost icon-btn" aria-label={dark ? "Usar tema claro" : "Usar tema escuro"} onClick={() => setTheme(dark ? "light" : "dark")}>
-                {dark ? <Sun size={17} /> : <Moon size={17} />}
-              </button>
-              <button className="btn btn-ghost icon-btn" aria-label="Sair" onClick={() => logout.mutate()}>
-                <LogOut size={17} />
-              </button>
-            </div>
-          )}
+          <nav className="nav" aria-label="Preferências">
+            <NavLink to="/configuracoes" data-tip="Configurações">
+              <Settings size={18} strokeWidth={1.8} aria-hidden />
+              <span className="nav-label">Configurações</span>
+            </NavLink>
+          </nav>
+          <button className="nav-btn" data-tip={collapsed ? "Expandir menu" : "Recolher menu"} aria-expanded={!collapsed} onClick={toggleCollapsed}>
+            {collapsed ? <PanelLeftOpen size={18} aria-hidden /> : <PanelLeftClose size={18} aria-hidden />}
+            <span className="nav-label">{collapsed ? "Expandir menu" : "Recolher menu"}</span>
+          </button>
         </div>
       </aside>
 
       <div className="content">
-        <header className="mobile-top">
-          <NavLink to="/" className="brand" style={{ padding: 0 }}>
-            <LunaMark size={28} />
-            <span className="brand-name" style={{ fontSize: 19 }}>
-              Luna <em>Finance</em>
+        <header className="topbar">
+          <NavLink to="/" className="brand" aria-label="Luna Finance — painel">
+            <LunaMark size={30} />
+            <span className="brand-name">
+              Luna <span>Finance</span>
             </span>
           </NavLink>
-          <div className="row" style={{ gap: 4 }}>
-            <button className="btn btn-ghost icon-btn" aria-label={dark ? "Usar tema claro" : "Usar tema escuro"} onClick={() => setTheme(dark ? "light" : "dark")}>
+          <div className="crumbs">
+            <nav aria-label="Você está em" className="row" style={{ gap: 8 }}>
+              <span>Luna Finance</span>
+              <ChevronRight size={14} aria-hidden />
+              <span aria-current="page">{title}</span>
+            </nav>
+            {VIEW_PAGES.has(pathname) && (
+              <span className="context-chip">
+                <i aria-hidden /> {viewLabel}
+              </span>
+            )}
+          </div>
+          <div className="topbar-actions">
+            <button className="btn btn-ghost icon-btn tip-always hide-mobile" data-tip={dark ? "Tema claro" : "Tema escuro"} aria-label={dark ? "Usar tema claro" : "Usar tema escuro"} onClick={() => setTheme(dark ? "light" : "dark")}>
               {dark ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            <NavLink to="/configuracoes" aria-label="Configurações" className="btn btn-ghost icon-btn">
-              {me ? <Avatar name={me.name} color={color} size="sm" /> : <Settings size={18} />}
-            </NavLink>
+            {me && <UserMenu me={me} color={color} onLogout={() => logout.mutate()} />}
           </div>
         </header>
         <main className="main" id="conteudo">
@@ -116,7 +248,7 @@ export function Layout() {
       <nav className="tabbar" aria-label="Navegação">
         {NAV.map((n) => (
           <NavLink key={n.to} to={n.to} end={n.end}>
-            <n.icon size={20} strokeWidth={1.8} />
+            <n.icon size={20} strokeWidth={1.8} aria-hidden />
             {n.short}
           </NavLink>
         ))}

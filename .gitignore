@@ -10,3 +10,6 @@ coverage/
 test-results/
 playwright-report/
 family.json
+
+# Satoshi (ITF Free Font License): baixada por web/scripts/fetch-fonts.mjs, não pode ir para repositório público
+web/public/fonts/

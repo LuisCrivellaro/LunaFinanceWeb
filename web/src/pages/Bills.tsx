@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { CalendarCheck, Check, Pause, Play, Plus, Repeat } from "lucide-react";
+import { AlertTriangle, CalendarCheck, CalendarClock, CalendarDays, Check, Pause, Play, Plus, Repeat } from "lucide-react";
 import { get, patch, post, qs } from "../lib/api";
 import { useApp, useInvalidateFinance, useMe, useMemberLookup, viewParam } from "../lib/app";
-import { centsToInput, dateShort, firstName, money, parseCents, relativeDue, todayIso } from "../lib/format";
+import { centsToInput, dateShort, daysUntil, firstName, money, parseCents, relativeDue, todayIso } from "../lib/format";
 import type { Recurrence, Transaction } from "../lib/types";
 import { Avatar, CategoryIcon, Empty, ErrorState, Modal, Money, Skeleton, ViewSwitch } from "../components/ui";
 import { TransactionForm } from "../components/TransactionForm";
@@ -38,9 +38,17 @@ function BillItem({ t, onEdit }: { t: Transaction; onEdit(t: Transaction): void 
         <div className="title">{t.description}</div>
         <div className="sub">
           {t.status === "paid" ? (
-            <span>Paga em {dateShort(t.paidAt ?? t.date)}</span>
+            <span className="chip ok">Paga em {dateShort(t.paidAt ?? t.date)}</span>
+          ) : t.overdue ? (
+            <span className="chip bad">
+              {dateShort(t.date)} · {relativeDue(t.date, today)}
+            </span>
+          ) : daysUntil(t.date, today) <= 3 ? (
+            <span className="chip warn">
+              {dateShort(t.date)} · {relativeDue(t.date, today)}
+            </span>
           ) : (
-            <span style={{ color: t.overdue ? "var(--bad)" : undefined, fontWeight: t.overdue ? 650 : 500 }}>
+            <span>
               {dateShort(t.date)} · {relativeDue(t.date, today)}
             </span>
           )}
@@ -169,47 +177,83 @@ export function BillsPage() {
       </div>
 
       {b && (
-        <div className="grid grid-3" style={{ marginBottom: 16 }}>
-          <div className="card kpi">
-            <span className="eyebrow">Atrasadas</span>
+        <div className="grid grid-3 bills-kpis">
+          <div className={`card kpi ${b.overdue.length ? "tone-bad" : "tone-ok"}`}>
+            <div className="kpi-top">
+              <span className="eyebrow">Atrasadas</span>
+              <span className={`kpi-icon ${b.overdue.length ? "expense" : "income"}`}>
+                {b.overdue.length ? <AlertTriangle size={15} aria-hidden /> : <Check size={15} aria-hidden />}
+              </span>
+            </div>
             <span className="value num">{money(b.totals.overdueCents)}</span>
             <span className="delta">
               {b.overdue.length ? <span className="chip bad">{b.overdue.length} conta(s)</span> : <span className="chip ok">Tudo em dia</span>}
             </span>
           </div>
           <div className="card kpi">
-            <span className="eyebrow">Próximos 60 dias</span>
+            <div className="kpi-top">
+              <span className="eyebrow">Próximos 60 dias</span>
+              <span className="kpi-icon warn">
+                <CalendarClock size={15} aria-hidden />
+              </span>
+            </div>
             <span className="value num">{money(b.totals.upcomingCents)}</span>
             <span className="delta">{b.upcoming.length} vencimento(s)</span>
           </div>
           <div className="card kpi">
-            <span className="eyebrow">Próximo vencimento</span>
-            <span className="value num" style={{ fontSize: 22 }}>{b.upcoming[0] ? dateShort(b.upcoming[0].date) : "—"}</span>
-            <span className="delta">{b.upcoming[0] ? `${b.upcoming[0].description} · ${money(b.upcoming[0].amountCents)}` : "nada agendado"}</span>
+            <div className="kpi-top">
+              <span className="eyebrow">Próximo vencimento</span>
+              <span className="kpi-icon primary">
+                <CalendarDays size={15} aria-hidden />
+              </span>
+            </div>
+            <span className="value num">{b.upcoming[0] ? dateShort(b.upcoming[0].date) : "—"}</span>
+            <span className="delta" style={{ minWidth: 0 }}>
+              {b.upcoming[0] ? (
+                <span className="ellipsis">
+                  {b.upcoming[0].description} · <span className="tnum">{money(b.upcoming[0].amountCents)}</span>
+                </span>
+              ) : (
+                "nada agendado"
+              )}
+            </span>
           </div>
         </div>
       )}
+      {!b && !bills.error && (
+        <div className="grid grid-3 bills-kpis">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} h={118} style={{ borderRadius: 20 }} />
+          ))}
+        </div>
+      )}
 
-      <div className="segmented" role="tablist" aria-label="Seções" style={{ marginBottom: 14 }}>
+      <div className="segmented" role="tablist" aria-label="Seções" style={{ marginBottom: 16 }}>
         <button role="tab" aria-pressed={tab === "open"} aria-selected={tab === "open"} onClick={() => setTab("open")}>Em aberto</button>
         <button role="tab" aria-pressed={tab === "paid"} aria-selected={tab === "paid"} onClick={() => setTab("paid")}>Pagas</button>
         <button role="tab" aria-pressed={tab === "recurring"} aria-selected={tab === "recurring"} onClick={() => setTab("recurring")}>Recorrentes</button>
       </div>
 
       {bills.error && <ErrorState error={bills.error} retry={() => bills.refetch()} />}
-      {b?.limitedToSelf && <div className="alert info" style={{ marginBottom: 12 }}>Sua conta vê só os totais da família, então aqui aparecem apenas as suas contas.</div>}
+      {b?.limitedToSelf && <div className="alert info" style={{ marginBottom: 16 }}>Sua conta vê só os totais da família, então aqui aparecem apenas as suas contas.</div>}
 
       {tab === "open" && (
         <div className="grid grid-2">
-          <div className="card">
+          <div className="card section-bad">
             <div className="card-head">
-              <h2>Atrasadas</h2>
+              <h2>
+                <i className="marker" style={{ background: "var(--bad)" }} aria-hidden /> Atrasadas
+              </h2>
+              {b && <span className="meta">{b.overdue.length} conta(s)</span>}
             </div>
-            {!b ? <Skeleton h={80} /> : b.overdue.length ? b.overdue.map((t) => <BillItem key={t.id} t={t} onEdit={setEditing} />) : <Empty icon={<CalendarCheck size={26} />} title="Nenhuma conta atrasada" />}
+            {!b ? <Skeleton h={80} /> : b.overdue.length ? b.overdue.map((t) => <BillItem key={t.id} t={t} onEdit={setEditing} />) : <Empty icon={<CalendarCheck size={22} />} title="Nenhuma conta atrasada" />}
           </div>
           <div className="card">
             <div className="card-head">
-              <h2>A vencer</h2>
+              <h2>
+                <i className="marker" style={{ background: "var(--warn)" }} aria-hidden /> A vencer
+              </h2>
+              {b && <span className="meta">próximos 60 dias</span>}
             </div>
             {!b ? <Skeleton h={80} /> : b.upcoming.length ? b.upcoming.map((t) => <BillItem key={t.id} t={t} onEdit={setEditing} />) : <Empty title="Nada nos próximos 60 dias" text="Cadastre contas com vencimento para receber lembretes." />}
           </div>
@@ -220,7 +264,7 @@ export function BillsPage() {
         <div className="card">
           <div className="card-head">
             <h2>Histórico de pagamentos</h2>
-            <span className="faint" style={{ fontSize: 13 }}>últimos 90 dias · fixas, recorrentes e parceladas</span>
+            <span className="meta">últimos 90 dias · fixas, recorrentes e parceladas</span>
           </div>
           {!b ? <Skeleton h={80} /> : b.paid.length ? b.paid.map((t) => <BillItem key={t.id} t={t} onEdit={setEditing} />) : <Empty title="Nenhum pagamento recente" />}
         </div>
@@ -230,14 +274,14 @@ export function BillsPage() {
         <div className="card">
           <div className="card-head">
             <h2>Recorrências</h2>
-            <span className="faint" style={{ fontSize: 13 }}>geradas automaticamente todo mês</span>
+            <span className="meta">geradas automaticamente todo mês</span>
           </div>
           {recs.error ? (
             <ErrorState error={recs.error} />
           ) : !recs.data ? (
             <Skeleton h={80} />
           ) : !recs.data.length ? (
-            <Empty icon={<Repeat size={26} />} title="Nenhuma recorrência" text="Ao criar uma movimentação, escolha “Todo mês” para ela se repetir." />
+            <Empty icon={<Repeat size={22} />} title="Nenhuma recorrência" text="Ao criar uma movimentação, escolha “Todo mês” para ela se repetir." />
           ) : (
             recs.data.map((r) => {
               const mine = r.userId === me?.id;

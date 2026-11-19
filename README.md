@@ -16,7 +16,7 @@ Gestão financeira da família — pelo site e pelo Telegram, no mesmo banco de 
 |---|---|---|
 | Backend | Node 22 + Express 5 + TypeScript | simples, um processo só (API + webhook + agendador) |
 | Banco | PostgreSQL (`pg`) — ou PGlite em dev/testes | o mesmo SQL nos dois; sem instalar nada para desenvolver |
-| Frontend | React 19 + Vite + TanStack Query + Recharts | servido pelo próprio backend (mesma origem) |
+| Frontend | React 19 + Vite + TanStack Query + Recharts | servido pelo próprio backend (mesma origem); visual em [`docs/DESIGN.md`](docs/DESIGN.md) |
 | Validação | Zod | toda entrada da API é validada no servidor |
 | IA (opcional) | Claude (Anthropic SDK) | só para interpretar frases difíceis do bot |
 
@@ -28,7 +28,7 @@ Valores monetários são guardados em **centavos inteiros** (sem float). Datas d
 npm install
 cp .env.example .env          # pode deixar DATABASE_URL vazio: usa PGlite em .data/
 npm run demo:seed             # opcional: família fictícia (senha DemoLuna2026)
-npm run dev                   # API em :3000 e site em http://localhost:5173
+npm run dev                   # API em :3000 e site em http://localhost:5173 (baixa a fonte Satoshi na 1ª vez)
 ```
 
 Para usar dados reais em vez da demonstração, apague `.data/` e veja **Primeiro acesso da família** abaixo.

@@ -2,9 +2,15 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "luna-dev",
-      "runtimeExecutable": "cmd",
-      "runtimeArgs": ["/c", "set PORT=3000&& npm run dev"],
+      "name": "luna-api",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:api"],
+      "port": 3000
+    },
+    {
+      "name": "luna-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:web"],
       "port": 5173
     }
   ]

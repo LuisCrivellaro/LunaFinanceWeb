@@ -1,19 +1,21 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArrowLeftRight, Copy, ExternalLink, Link2, Plus, Send, Trash2, Unlink } from "lucide-react";
+import {
+  Archive, ArrowLeftRight, Bell, Copy, ExternalLink, KeyRound, Link2, Plus, Send, Tags, Trash2, Unlink, UserRound, Users, Wallet, type LucideIcon,
+} from "lucide-react";
 import { del, get, patch, post } from "../lib/api";
 import { useAccounts, useApp, useCategories, useMe } from "../lib/app";
 import { centsToInput, dateFull, firstName, memberColor, money, parseCents, todayIso } from "../lib/format";
 import type { Me } from "../lib/types";
-import { Avatar, ICON_CHOICES, Icon, Modal, Skeleton } from "../components/ui";
+import { Avatar, ICON_CHOICES, Icon, Modal, Skeleton, prefersReducedMotion } from "../components/ui";
 
 function Section({ id, title, desc, children }: { id: string; title: string; desc?: string; children: React.ReactNode }) {
   return (
-    <section id={id} className="card" style={{ scrollMarginTop: 20 }}>
-      <div style={{ marginBottom: 16 }}>
-        <h2>{title}</h2>
-        {desc && <p className="muted" style={{ margin: "4px 0 0", fontSize: 14 }}>{desc}</p>}
-      </div>
+    <section id={id} className="card settings-section" aria-labelledby={`${id}-t`}>
+      <header className="settings-section-head">
+        <h2 id={`${id}-t`}>{title}</h2>
+        {desc && <p>{desc}</p>}
+      </header>
       <div className="stack">{children}</div>
     </section>
   );
@@ -35,11 +37,11 @@ function ProfileSection({ me }: { me: Me }) {
   const palette = ["#2a78d6", "#eb6834", "#1baf7a", "#6250d6", "#e87ba4", "#eda100"];
   return (
     <Section id="perfil" title="Seu perfil">
-      <div className="row" style={{ gap: 14 }}>
+      <div className="profile-row">
         <Avatar name={me.name} color={memberColor(me.color, dark)} size="lg" />
-        <div>
-          <div style={{ fontWeight: 650 }}>{me.name}</div>
-          <div className="faint" style={{ fontSize: 13 }}>{me.email}</div>
+        <div style={{ minWidth: 0 }}>
+          <div className="profile-name">{me.name}</div>
+          <div className="faint ellipsis" style={{ fontSize: 13 }}>{me.email}</div>
         </div>
       </div>
       <form
@@ -58,16 +60,16 @@ function ProfileSection({ me }: { me: Me }) {
       </form>
       <div className="field">
         <span>Sua cor</span>
-        <div className="row">
-          {palette.map((c) => (
-            <button key={c} type="button" aria-label={`Usar cor ${c}`} aria-pressed={me.color === c} onClick={() => save.mutate({ color: c })} style={{ width: 30, height: 30, borderRadius: "50%", cursor: "pointer", background: memberColor(c, dark), border: me.color === c ? "3px solid var(--ink)" : "3px solid transparent" }} />
+        <div className="swatches">
+          {palette.map((c, i) => (
+            <button key={c} type="button" className="swatch" aria-label={`Usar cor ${i + 1}`} aria-pressed={me.color === c} onClick={() => save.mutate({ color: c })} style={{ ["--c" as string]: memberColor(c, dark) }} />
           ))}
         </div>
       </div>
       <div className="field">
         <span>Aparência</span>
-        <div className="segmented" role="group">
-          {(["system", "light", "dark"] as const).map((t) => (
+        <div className="segmented" role="group" aria-label="Aparência">
+          {(["dark", "light", "system"] as const).map((t) => (
             <button key={t} aria-pressed={theme === t} onClick={() => setTheme(t)}>{t === "system" ? "Automático" : t === "light" ? "Claro" : "Escuro"}</button>
           ))}
         </div>
@@ -93,7 +95,7 @@ function SecuritySection() {
       <form className="grid grid-2" style={{ alignItems: "end" }} onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
         <label className="field"><span>Senha atual</span><input className="input" type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} /></label>
         <label className="field"><span>Nova senha</span><input className="input" type="password" autoComplete="new-password" minLength={10} value={next} onChange={(e) => setNext(e.target.value)} /></label>
-        {save.error && <div className="alert bad span-2">{save.error.message}</div>}
+        {save.error && <div className="alert bad span-2" role="alert">{save.error.message}</div>}
         <div><button className="btn" disabled={!current || next.length < 10 || save.isPending}>Alterar senha</button></div>
       </form>
     </Section>
@@ -141,9 +143,9 @@ function TelegramSection({ me }: { me: Me }) {
       {me.telegramLinkedAt ? (
         <div className="row wrap between">
           <div className="row">
-            <span className="cat-icon" style={{ ["--c" as string]: "#2a9fd8" }}><Send size={18} /></span>
+            <span className="cat-icon" style={{ ["--c" as string]: "#3aa6e0" }}><Send size={18} /></span>
             <div>
-              <div style={{ fontWeight: 650 }}>Conectado{me.telegramUsername ? ` como @${me.telegramUsername}` : ""}</div>
+              <div className="row" style={{ gap: 8, fontWeight: 650 }}><span className="chip ok">Conectado</span>{me.telegramUsername ? `@${me.telegramUsername}` : ""}</div>
               <div className="faint" style={{ fontSize: 13 }}>desde {new Date(me.telegramLinkedAt).toLocaleDateString("pt-BR")}</div>
             </div>
           </div>
@@ -162,7 +164,7 @@ function TelegramSection({ me }: { me: Me }) {
           <div className="alert info" style={{ display: "grid", gap: 6 }}>
             <span>Ou envie esta mensagem para {bot ? <b>@{bot}</b> : "o bot"}:</span>
             <div className="row">
-              <code className="num" style={{ fontSize: 20, letterSpacing: "0.08em" }}>/vincular {code.code}</code>
+              <code className="link-code">/vincular {code.code}</code>
               <button className="btn btn-sm btn-ghost" aria-label="Copiar" onClick={() => navigator.clipboard?.writeText(`/vincular ${code.code}`).then(() => toast("Copiado"))}><Copy size={14} /></button>
             </div>
             <span className="faint" style={{ fontSize: 12.5 }}>Código pessoal, de uso único. Expira em {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}. Não compartilhe.</span>
@@ -203,15 +205,17 @@ function NotificationsSection({ me }: { me: Me }) {
           {[1, 2, 3, 5, 7].map((n) => <option key={n} value={n}>{n} dia(s) antes</option>)}
         </select>
       </label>
-      {items.map(([key, label, desc]) => (
-        <label className="check" key={key} style={{ alignItems: "flex-start" }}>
-          <input type="checkbox" checked={Boolean(me[key])} onChange={(e) => save.mutate({ [key]: e.target.checked } as Partial<Me>)} style={{ marginTop: 3 }} />
-          <span>
-            <span style={{ display: "block" }}>{label}</span>
-            <span className="faint" style={{ fontSize: 13, fontWeight: 400 }}>{desc}</span>
-          </span>
-        </label>
-      ))}
+      <div>
+        {items.map(([key, label, desc]) => (
+          <label className="switch-row" key={key}>
+            <span className="switch-text">
+              <b>{label}</b>
+              <small>{desc}</small>
+            </span>
+            <input type="checkbox" role="switch" className="switch" checked={Boolean(me[key])} onChange={(e) => save.mutate({ [key]: e.target.checked } as Partial<Me>)} />
+          </label>
+        ))}
+      </div>
     </Section>
   );
 }
@@ -238,7 +242,7 @@ function TransfersList() {
       <p className="eyebrow" style={{ margin: "4px 0 6px" }}>Transferências recentes</p>
       <div className="list">
         {list.data.slice(0, 6).map((t) => (
-          <div className="list-item" key={t.id} style={{ gridTemplateColumns: "1fr auto" }}>
+          <div className="list-item no-icon" key={t.id}>
             <div style={{ minWidth: 0 }}>
               <div className="title">{t.fromAccountName} → {t.toAccountName}</div>
               <div className="sub">{dateFull(t.date)}{t.source === "telegram" ? " · pelo Telegram" : ""}</div>
@@ -294,9 +298,9 @@ function AccountsSection() {
         <div className="list">
           {accounts?.map((a) => (
             <div className="list-item" key={a.id}>
-              <span className="cat-icon"><Icon name="wallet" /></span>
+              <span className="cat-icon" style={{ ["--c" as string]: "var(--primary)" }}><Icon name="wallet" /></span>
               <div style={{ minWidth: 0 }} className="clickable" onClick={() => setForm({ id: a.id, name: a.name, type: a.type, initial: centsToInput(a.initialBalanceCents) })}>
-                <div className="title">{a.name} {a.isDefault && <span className="chip">Principal</span>}</div>
+                <div className="title">{a.name} {a.isDefault && <span className="chip primary">Principal</span>}</div>
                 <div className="sub">{ACCOUNT_TYPES[a.type] ?? a.type}</div>
               </div>
               <div className="row">
@@ -374,7 +378,7 @@ function CategoriesSection({ me }: { me: Me }) {
           <p className="eyebrow" style={{ margin: "0 0 8px" }}>{k === "expense" ? "Despesas" : "Receitas"}</p>
           <div className="row wrap" style={{ gap: 8 }}>
             {categories?.filter((c) => c.kind === k).map((c) => (
-              <button key={c.id} className="chip" style={{ height: 32, border: 0, cursor: canEdit(c) ? "pointer" : "default", ["--c" as string]: c.color }} onClick={() => canEdit(c) && setForm({ id: c.id, name: c.name, kind: c.kind, icon: c.icon, keywords: c.keywords })}>
+              <button key={c.id} className="chip chip-btn" disabled={!canEdit(c)} title={canEdit(c) ? "Editar categoria" : undefined} onClick={() => canEdit(c) && setForm({ id: c.id, name: c.name, kind: c.kind, icon: c.icon, keywords: c.keywords })}>
                 <span style={{ color: c.color, display: "inline-flex" }}><Icon name={c.icon} size={14} /></span> {c.name}
               </button>
             ))}
@@ -388,7 +392,7 @@ function CategoriesSection({ me }: { me: Me }) {
           <button className="btn" onClick={() => setForm(null)}>Cancelar</button>
           <button className="btn btn-primary" disabled={!form.name || save.isPending} onClick={() => save.mutate()}>Salvar</button></>}>
           {!form.id && (
-            <div className="segmented" role="group">
+            <div className="segmented fill" role="group" aria-label="Tipo">
               <button type="button" aria-pressed={form.kind === "expense"} onClick={() => setForm({ ...form, kind: "expense" })}>Despesa</button>
               <button type="button" aria-pressed={form.kind === "income"} onClick={() => setForm({ ...form, kind: "income" })}>Receita</button>
             </div>
@@ -398,7 +402,7 @@ function CategoriesSection({ me }: { me: Me }) {
           <div className="field"><span>Ícone</span>
             <div className="row wrap" style={{ gap: 6 }}>
               {ICON_CHOICES.map((i) => (
-                <button key={i} type="button" className="btn icon-btn" aria-pressed={form.icon === i} aria-label={i} onClick={() => setForm({ ...form, icon: i })} style={{ borderColor: form.icon === i ? "var(--ink)" : undefined }}><Icon name={i} size={16} /></button>
+                <button key={i} type="button" className="btn icon-btn icon-choice" aria-pressed={form.icon === i} aria-label={i} onClick={() => setForm({ ...form, icon: i })}><Icon name={i} size={16} /></button>
               ))}
             </div>
           </div>
@@ -442,7 +446,7 @@ function FamilySection({ me }: { me: Me }) {
       {!list.data ? <Skeleton h={80} /> : (
         <div className="list">
           {list.data.map((m) => (
-            <div className="list-item" key={m.id} style={{ gridTemplateColumns: "auto 1fr auto", opacity: m.active ? 1 : 0.5 }}>
+            <div className="list-item member-row" key={m.id} style={{ opacity: m.active ? 1 : 0.55 }}>
               <Avatar name={m.name} color={memberColor(m.color, dark)} />
               <div style={{ minWidth: 0 }}>
                 <div className="title">{m.name}</div>
@@ -452,8 +456,8 @@ function FamilySection({ me }: { me: Me }) {
                   {m.telegramLinked && <span className="chip">Telegram</span>}
                 </div>
               </div>
-              <div className="row wrap" style={{ gap: 6, justifyContent: "flex-end" }}>
-                <select className="select" style={{ width: "auto", height: 34 }} aria-label={`O que ${firstName(m.name)} vê da família`} value={m.familyAccess} onChange={(e) => access.mutate({ id: m.id, body: { familyAccess: e.target.value } })}>
+              <div className="member-actions">
+                <select className="select select-inline" aria-label={`O que ${firstName(m.name)} vê da família`} value={m.familyAccess} onChange={(e) => access.mutate({ id: m.id, body: { familyAccess: e.target.value } })}>
                   <option value="full">Vê tudo da família</option>
                   <option value="summary">Só totais da família</option>
                   <option value="none">Só os próprios dados</option>
@@ -487,13 +491,50 @@ function FamilySection({ me }: { me: Me }) {
   );
 }
 
+type SectionLink = { id: string; label: string; icon: LucideIcon; group: string };
+
 export function SettingsPage() {
   const { data: me } = useMe();
+  const [active, setActive] = useState("perfil");
+  const manage = Boolean(me?.capabilities.manageMembers);
+
+  // destaca a seção visível na navegação lateral
+  useEffect(() => {
+    if (!me) return;
+    const els = Array.from(document.querySelectorAll<HTMLElement>(".settings-section"));
+    const io = new IntersectionObserver(
+      (entries) => {
+        const vis = entries.filter((e) => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+        if (vis) setActive(vis.target.id);
+      },
+      { rootMargin: "-80px 0px -55% 0px" },
+    );
+    els.forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, [me, manage]);
+
+  // abre direto numa seção (ex.: /configuracoes#contas)
+  useEffect(() => {
+    if (!me || !window.location.hash) return;
+    const el = document.getElementById(window.location.hash.slice(1));
+    if (el) setTimeout(() => el.scrollIntoView({ block: "start" }), 50);
+  }, [me]);
+
   if (!me) return <Skeleton h={300} />;
-  const links = [
-    ["perfil", "Perfil"], ["telegram", "Telegram"], ["notificacoes", "Avisos"], ["contas", "Contas"], ["categorias", "Categorias"], ["seguranca", "Senha"],
-    ...(me.capabilities.manageMembers ? [["familia", "Pessoas"]] : []),
+  const links: SectionLink[] = [
+    { id: "perfil", label: "Perfil e aparência", icon: UserRound, group: "Você" },
+    { id: "seguranca", label: "Senha", icon: KeyRound, group: "Você" },
+    { id: "telegram", label: "Telegram", icon: Send, group: "Integrações" },
+    { id: "notificacoes", label: "Avisos", icon: Bell, group: "Integrações" },
+    { id: "contas", label: "Contas", icon: Wallet, group: "Finanças" },
+    { id: "categorias", label: "Categorias", icon: Tags, group: "Finanças" },
+    ...(manage ? [{ id: "familia", label: "Pessoas", icon: Users, group: "Família" }] : []),
   ];
+  const groups = Array.from(new Set(links.map((l) => l.group)));
+  const go = (id: string) => {
+    setActive(id);
+    document.getElementById(id)?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" });
+  };
   return (
     <>
       <div className="page-head">
@@ -502,19 +543,30 @@ export function SettingsPage() {
           <h1>Configurações</h1>
         </div>
       </div>
-      <nav className="segmented" aria-label="Seções" style={{ marginBottom: 16 }}>
-        {links.map(([id, label]) => (
-          <button key={id} onClick={() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" })}>{label}</button>
-        ))}
-      </nav>
-      <div className="stack" style={{ maxWidth: 860 }}>
-        <ProfileSection me={me} />
-        <TelegramSection me={me} />
-        <NotificationsSection me={me} />
-        <AccountsSection />
-        <CategoriesSection me={me} />
-        <SecuritySection />
-        {me.capabilities.manageMembers && <FamilySection me={me} />}
+      <div className="settings">
+        <nav className="settings-nav" aria-label="Seções">
+          {groups.map((g) => (
+            <div className="settings-nav-group" key={g}>
+              <p className="nav-title">{g}</p>
+              {links
+                .filter((l) => l.group === g)
+                .map((l) => (
+                  <button key={l.id} aria-current={active === l.id ? "true" : undefined} onClick={() => go(l.id)}>
+                    <l.icon size={16} aria-hidden /> {l.label}
+                  </button>
+                ))}
+            </div>
+          ))}
+        </nav>
+        <div className="stack settings-body">
+          <ProfileSection me={me} />
+          <SecuritySection />
+          <TelegramSection me={me} />
+          <NotificationsSection me={me} />
+          <AccountsSection />
+          <CategoriesSection me={me} />
+          {manage && <FamilySection me={me} />}
+        </div>
       </div>
     </>
   );

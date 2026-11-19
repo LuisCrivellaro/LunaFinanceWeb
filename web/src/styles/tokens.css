@@ -1,0 +1,229 @@
+/* ==========================================================================
+   Luna Finance — tokens
+   Conceito "noite clara": painel noturno e calmo. Roxo/lavanda é identidade
+   e foco; verde e vermelho só carregam significado (receita/despesa, estado).
+   Dark é a experiência principal; o claro tem tokens próprios.
+
+   Breakpoints (media queries não aceitam variáveis — mantenha estes números):
+     1180px  painel em uma coluna, colunas laterais viram grade
+      860px  layout mobile: sem sidebar, topo compacto + tabbar inferior
+      600px  grades de indicadores em 2 colunas, modais em folha
+      400px  ajustes finos para 360px
+   ========================================================================== */
+
+@font-face {
+  font-family: "Satoshi";
+  /* baixada por web/scripts/fetch-fonts.mjs (fora do git por licença) */
+  src: url("/fonts/satoshi-variable.woff2") format("woff2");
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: dark;
+
+  /* superfícies */
+  --bg: #0b0b0f;
+  --bg-2: #111115;
+  --surface: #17171c;
+  --surface-2: #1e1e24;
+  --surface-3: #26262d;
+  --line: #24242b;
+  --line-strong: #34343d;
+  --overlay: rgba(5, 5, 8, 0.66);
+
+  /* texto (AA sobre --surface) */
+  --text: #f5f4f7;
+  --text-2: #a9a7b1;
+  --text-3: #8a8894;
+  --text-on-primary: #17092a;
+
+  /* identidade */
+  --primary: #c48aff;
+  --primary-2: #a77bda;
+  --primary-strong: #d5abff;
+  --primary-soft: rgba(196, 138, 255, 0.1);
+  --primary-softer: rgba(196, 138, 255, 0.06);
+  --primary-line: rgba(196, 138, 255, 0.32);
+  --lime: #a8fa65;
+
+  /* significado */
+  --income: #64d6aa;
+  --expense: #f0787a;
+  --ok: #64d6aa;
+  --ok-bg: rgba(100, 214, 170, 0.12);
+  --warn: #f2b85b;
+  --warn-bg: rgba(242, 184, 91, 0.12);
+  --bad: #f0787a;
+  --bad-bg: rgba(240, 120, 122, 0.12);
+  --info-bg: rgba(196, 138, 255, 0.08);
+  --focus: #c48aff;
+
+  /* dados */
+  --viz-income: #64d6aa;
+  --viz-expense: #f0787a;
+  --viz-primary: #c48aff;
+  --viz-primary-2: #8b6bc0;
+  --grid: rgba(255, 255, 255, 0.055);
+  --track: rgba(255, 255, 255, 0.06);
+
+  /* tipografia */
+  --font: "Satoshi", ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  --fs-display: clamp(40px, 5vw, 60px);
+  --fs-h1: clamp(24px, 2.4vw, 30px);
+  --fs-h2: 16px;
+  --fs-h3: 14px;
+  --fs-body: 14.5px;
+  --fs-sm: 13px;
+  --fs-xs: 12px;
+  --fs-kpi: clamp(20px, 2vw, 26px);
+  --lh-tight: 1.1;
+  --lh: 1.5;
+  --tracking-display: -0.035em;
+  --tracking-title: -0.02em;
+  --tracking-eyebrow: 0.09em;
+
+  /* espaçamento (escala de 4) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+
+  /* raios */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-xl: 26px;
+  --r-full: 999px;
+
+  /* alturas de controle */
+  --h-sm: 32px;
+  --h-md: 40px;
+  --h-lg: 48px;
+
+  /* sombras: só onde há elevação real (menus, modais, toasts) */
+  --edge: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  --shadow-pop: 0 20px 50px -18px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --shadow-primary: 0 8px 22px -10px rgba(196, 138, 255, 0.55);
+
+  /* camadas */
+  --z-sticky: 20;
+  --z-nav: 40;
+  --z-fab: 41;
+  --z-menu: 60;
+  --z-overlay: 80;
+  --z-toast: 100;
+
+  /* movimento */
+  --dur-1: 150ms;
+  --dur-2: 220ms;
+  --dur-3: 300ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* layout */
+  --sidebar-w: 236px;
+  --sidebar-w-collapsed: 76px;
+  --topbar-h: 64px;
+  --content-max: 1360px;
+}
+
+/* ------------------------------ tema claro ------------------------------ */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f4f8;
+  --bg-2: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f3f1f7;
+  --surface-3: #eae7f1;
+  --line: #e7e4ee;
+  --line-strong: #d4d0dc;
+  --overlay: rgba(22, 18, 32, 0.4);
+
+  --text: #16141b;
+  --text-2: #55525f;
+  --text-3: #6b6876;
+  --text-on-primary: #ffffff;
+
+  --primary: #7d43d4;
+  --primary-2: #6a36bb;
+  --primary-strong: #5d2ca9;
+  --primary-soft: rgba(125, 67, 212, 0.09);
+  --primary-softer: rgba(125, 67, 212, 0.05);
+  --primary-line: rgba(125, 67, 212, 0.3);
+  --lime: #4f8f12;
+
+  --income: #0f8a60;
+  --expense: #c9424b;
+  --ok: #0f8a60;
+  --ok-bg: rgba(15, 138, 96, 0.1);
+  --warn: #946100;
+  --warn-bg: rgba(212, 150, 30, 0.14);
+  --bad: #c03b44;
+  --bad-bg: rgba(201, 66, 75, 0.1);
+  --info-bg: rgba(125, 67, 212, 0.07);
+  --focus: #7d43d4;
+
+  --viz-income: #20a676;
+  --viz-expense: #e0646c;
+  --viz-primary: #8a55dc;
+  --viz-primary-2: #b896ec;
+  --grid: rgba(22, 20, 27, 0.07);
+  --track: rgba(22, 20, 27, 0.07);
+
+  --edge: none;
+  --shadow-pop: 0 20px 50px -20px rgba(40, 24, 72, 0.3), 0 0 0 1px rgba(22, 20, 27, 0.05);
+  --shadow-primary: 0 8px 20px -10px rgba(125, 67, 212, 0.5);
+}
+
+/* "Automático" segue o sistema: sem data-theme e sistema claro → claro */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --bg: #f5f4f8;
+    --bg-2: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #f3f1f7;
+    --surface-3: #eae7f1;
+    --line: #e7e4ee;
+    --line-strong: #d4d0dc;
+    --overlay: rgba(22, 18, 32, 0.4);
+    --text: #16141b;
+    --text-2: #55525f;
+    --text-3: #6b6876;
+    --text-on-primary: #ffffff;
+    --primary: #7d43d4;
+    --primary-2: #6a36bb;
+    --primary-strong: #5d2ca9;
+    --primary-soft: rgba(125, 67, 212, 0.09);
+    --primary-softer: rgba(125, 67, 212, 0.05);
+    --primary-line: rgba(125, 67, 212, 0.3);
+    --lime: #4f8f12;
+    --income: #0f8a60;
+    --expense: #c9424b;
+    --ok: #0f8a60;
+    --ok-bg: rgba(15, 138, 96, 0.1);
+    --warn: #946100;
+    --warn-bg: rgba(212, 150, 30, 0.14);
+    --bad: #c03b44;
+    --bad-bg: rgba(201, 66, 75, 0.1);
+    --info-bg: rgba(125, 67, 212, 0.07);
+    --focus: #7d43d4;
+    --viz-income: #20a676;
+    --viz-expense: #e0646c;
+    --viz-primary: #8a55dc;
+    --viz-primary-2: #b896ec;
+    --grid: rgba(22, 20, 27, 0.07);
+    --track: rgba(22, 20, 27, 0.07);
+    --edge: none;
+    --shadow-pop: 0 20px 50px -20px rgba(40, 24, 72, 0.3), 0 0 0 1px rgba(22, 20, 27, 0.05);
+    --shadow-primary: 0 8px 20px -10px rgba(125, 67, 212, 0.5);
+  }
+}
