@@ -77,7 +77,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const cfg: Config = {
     env: nodeEnv,
     port: int(env.PORT, 3000),
-    databaseUrl: env.DATABASE_URL ?? (nodeEnv === "production" ? "" : "pglite://.data/luna"),
+    databaseUrl: env.DATABASE_URL || (nodeEnv === "production" ? "" : "pglite://.data/luna"),
     appUrl,
     timezone: env.APP_TIMEZONE ?? "America/Sao_Paulo",
     sessionDays: int(env.SESSION_DAYS, 30),
