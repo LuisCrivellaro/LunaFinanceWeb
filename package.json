@@ -30,7 +30,8 @@
     "demo:seed": "tsx server/src/scripts/demo-seed.ts",
     "telegram:poll": "tsx server/src/scripts/telegram-poll.ts",
     "e2e": "node e2e/smoke.mjs",
-    "fonts": "node web/scripts/fetch-fonts.mjs"
+    "fonts": "node web/scripts/fetch-fonts.mjs",
+    "openbot:openapi": "tsx server/src/scripts/openbot-openapi.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
