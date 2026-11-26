@@ -368,7 +368,7 @@ describe("migração 3", () => {
     expect((await db.query("SELECT to_regclass('transfers') AS t")).rows[0].t).toBeNull();
     expect((await db.query("SELECT count(*)::int AS n FROM transactions")).rows[0].n).toBe(1);
     await migrate(db, () => {});
-    expect((await db.query("SELECT max(id) AS v FROM schema_migrations")).rows[0].v).toBe(3);
+    expect((await db.query("SELECT count(*)::int AS n FROM schema_migrations WHERE id = 3")).rows[0].n).toBe(1);
     expect((await db.query("SELECT count(*)::int AS n FROM transactions")).rows[0].n).toBe(1);
     await db.close();
   });

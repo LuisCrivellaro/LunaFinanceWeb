@@ -21,6 +21,44 @@ function Section({ id, title, desc, children }: { id: string; title: string; des
   );
 }
 
+/** Campo do final do cartão (4 dígitos). Salva ao confirmar; vazio apaga. */
+function CardLast4Input({ value, onSave, label, compact, disabled }: { value: string | null; onSave(v: string | null): void; label: string; compact?: boolean; disabled?: boolean }) {
+  const [v, setV] = useState(value ?? "");
+  useEffect(() => setV(value ?? ""), [value]);
+  const valid = v === "" || /^\d{4}$/.test(v);
+  const changed = v !== (value ?? "");
+  const submit = () => valid && changed && onSave(v === "" ? null : v);
+  const input = (
+    <input
+      className={`input card-last4-input${compact ? " select-inline" : ""}`}
+      inputMode="numeric"
+      autoComplete="off"
+      maxLength={4}
+      placeholder="0000"
+      aria-label={label}
+      aria-invalid={!valid}
+      value={v}
+      disabled={disabled}
+      onChange={(e) => setV(e.target.value.replace(/\D/g, "").slice(0, 4))}
+      onBlur={compact ? submit : undefined}
+      onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), submit())}
+    />
+  );
+  if (compact) return <span className="card-last4 compact" title={label}><span aria-hidden>••••</span>{input}</span>;
+  return (
+    <div className="field">
+      <form className="row wrap" style={{ alignItems: "end" }} onSubmit={(e) => (e.preventDefault(), submit())}>
+        <label className="field" style={{ flex: "1 1 220px" }}>
+          <span>Final do seu cartão de crédito</span>
+          <span className="card-last4"><span aria-hidden>••••</span>{input}</span>
+        </label>
+        <button className="btn" disabled={!valid || !changed || disabled}>Salvar</button>
+      </form>
+      <small className="faint">Só os 4 últimos dígitos, para identificar seu cartão no painel. Deixe vazio para remover.</small>
+    </div>
+  );
+}
+
 function ProfileSection({ me }: { me: Me }) {
   const { toast, theme, setTheme, dark } = useApp();
   const qc = useQueryClient();
@@ -30,6 +68,7 @@ function ProfileSection({ me }: { me: Me }) {
     onSuccess: (data) => {
       qc.setQueryData(["me"], data);
       qc.invalidateQueries({ queryKey: ["members"] });
+      qc.invalidateQueries({ queryKey: ["wallet"] });
       toast("Perfil atualizado");
     },
     onError: (e) => toast(e.message, "error"),
@@ -58,6 +97,7 @@ function ProfileSection({ me }: { me: Me }) {
         </label>
         <button className="btn" disabled={name === me.name || save.isPending}>Salvar</button>
       </form>
+      <CardLast4Input value={me.cardLast4} label="Final do seu cartão de crédito" disabled={save.isPending} onSave={(cardLast4) => save.mutate({ cardLast4 })} />
       <div className="field">
         <span>Sua cor</span>
         <div className="swatches">
@@ -412,7 +452,7 @@ function CategoriesSection({ me }: { me: Me }) {
   );
 }
 
-interface ManagedMember { id: number; name: string; email: string; color: string; familyAccess: "none" | "summary" | "full"; active: boolean; hasPassword: boolean; telegramLinked: boolean; lastSeenAt: string | null }
+interface ManagedMember { id: number; name: string; email: string; color: string; familyAccess: "none" | "summary" | "full"; active: boolean; cardLast4: string | null; hasPassword: boolean; telegramLinked: boolean; lastSeenAt: string | null }
 
 /**
  * Pessoas da família — só aparece para quem pode gerenciar o sistema,
@@ -425,10 +465,15 @@ function FamilySection({ me }: { me: Me }) {
   const [link, setLink] = useState<{ name: string; url: string } | null>(null);
   const [adding, setAdding] = useState(false);
   const [newM, setNewM] = useState({ name: "", email: "" });
-  const refresh = () => { qc.invalidateQueries({ queryKey: ["family-members"] }); qc.invalidateQueries({ queryKey: ["members"] }); };
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["family-members"] });
+    qc.invalidateQueries({ queryKey: ["members"] });
+    qc.invalidateQueries({ queryKey: ["wallet"] });
+    qc.invalidateQueries({ queryKey: ["me"] });
+  };
   const access = useMutation({
     mutationFn: ({ id, body }: { id: number; body: object }) => patch(`/family/members/${id}`, body),
-    onSuccess: () => { refresh(); toast("Acesso atualizado"); },
+    onSuccess: (_r, v) => { refresh(); toast("cardLast4" in v.body ? "Final do cartão salvo" : "Acesso atualizado"); },
     onError: (e) => toast(e.message, "error"),
   });
   const issue = useMutation({
@@ -442,7 +487,7 @@ function FamilySection({ me }: { me: Me }) {
     onError: (e) => toast(e.message, "error"),
   });
   return (
-    <Section id="familia" title="Pessoas da família" desc="Defina o que cada pessoa enxerga dos dados dos outros e gere links de acesso.">
+    <Section id="familia" title="Pessoas da família" desc="Defina o que cada pessoa enxerga dos dados dos outros, o final do cartão de cada um e gere links de acesso.">
       {!list.data ? <Skeleton h={80} /> : (
         <div className="list">
           {list.data.map((m) => (
@@ -457,6 +502,7 @@ function FamilySection({ me }: { me: Me }) {
                 </div>
               </div>
               <div className="member-actions">
+                <CardLast4Input compact value={m.cardLast4} label={`Final do cartão de ${firstName(m.name)}`} onSave={(cardLast4) => access.mutate({ id: m.id, body: { cardLast4 } })} />
                 <select className="select select-inline" aria-label={`O que ${firstName(m.name)} vê da família`} value={m.familyAccess} onChange={(e) => access.mutate({ id: m.id, body: { familyAccess: e.target.value } })}>
                   <option value="full">Vê tudo da família</option>
                   <option value="summary">Só totais da família</option>
