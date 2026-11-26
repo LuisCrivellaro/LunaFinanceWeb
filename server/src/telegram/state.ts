@@ -55,7 +55,9 @@ export async function clearConversation(q: Queryable, userId: number) {
 
 // ------------------------------ ações pendentes ------------------------------
 
-export type PendingKind = "transaction" | "goal" | "contribution" | "transfer" | "tx_update" | "tx_delete";
+export type PendingKind = "transaction" | "goal" | "contribution" | "transfer" | "tx_update" | "tx_delete" | "invoice_payment";
+/** Canal de onde veio o rascunho: um canal nunca confirma rascunho de outro. */
+export type Channel = "telegram" | "whatsapp";
 
 export interface GoalPayload {
   name: string;
@@ -92,13 +94,21 @@ export interface TxDeletePayload {
   kind: "income" | "expense";
 }
 
+/** Marca a fatura da família como paga (não cria despesa: as compras já foram contadas). */
+export interface InvoicePaymentPayload {
+  invoiceMonth: string;
+  amountCents: number;
+  paidAt: string;
+}
+
 export type PendingPayload =
   | { kind: "transaction"; draft: Draft; messageId?: number; flow?: WizardFlow }
   | { kind: "goal"; goal: GoalPayload; messageId?: number }
   | { kind: "contribution"; contribution: ContributionPayload; messageId?: number; flow?: WizardFlow }
   | { kind: "transfer"; transfer: TransferPayload; messageId?: number; flow?: WizardFlow }
   | { kind: "tx_update"; update: TxUpdatePayload; messageId?: number }
-  | { kind: "tx_delete"; del: TxDeletePayload; messageId?: number };
+  | { kind: "tx_delete"; del: TxDeletePayload; messageId?: number }
+  | { kind: "invoice_payment"; invoice: InvoicePaymentPayload; messageId?: number };
 
 export interface Pending {
   id: string;
@@ -110,25 +120,48 @@ export interface Pending {
   version: number;
   expiresAt: Date;
   resultId: number | null;
+  channel: Channel;
+  externalRef: string | null;
 }
 
 export const PENDING_TTL_MIN = 15;
 
-export async function createPending(q: Queryable, userId: number, chatId: number, payload: PendingPayload): Promise<Pending> {
+export async function createPending(
+  q: Queryable,
+  userId: number,
+  chatId: number,
+  payload: PendingPayload,
+  opts: { channel?: Channel; externalRef?: string | null } = {},
+): Promise<Pending> {
   const id = randomBytes(9).toString("base64url"); // 12 caracteres — cabe no callback_data
   const expiresAt = new Date(now().getTime() + PENDING_TTL_MIN * 60000);
+  const channel = opts.channel ?? "telegram";
   await q.query(
-    `INSERT INTO telegram_pending_actions (id, user_id, chat_id, payload, kind, expires_at) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [id, userId, chatId, JSON.stringify(payload), payload.kind, expiresAt],
+    `INSERT INTO telegram_pending_actions (id, user_id, chat_id, payload, kind, expires_at, channel, external_ref) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id, userId, chatId, JSON.stringify(payload), payload.kind, expiresAt, channel, opts.externalRef ?? null],
   );
-  return { id, userId, chatId, kind: payload.kind, payload, status: "pending", version: 1, expiresAt, resultId: null };
+  return {
+    id, userId, chatId, kind: payload.kind, payload, status: "pending", version: 1, expiresAt, resultId: null, channel, externalRef: opts.externalRef ?? null,
+  };
+}
+
+/** Rascunho já criado para a mesma mensagem externa (idempotência por canal e pessoa). */
+export async function findPendingByRef(q: Queryable, channel: Channel, userId: number, externalRef: string): Promise<Pending | null> {
+  const { rows } = await q.query<{ id: string }>(
+    "SELECT id FROM telegram_pending_actions WHERE channel = $1 AND user_id = $2 AND external_ref = $3",
+    [channel, userId, externalRef],
+  );
+  return rows[0] ? getPending(q, rows[0].id) : null;
 }
 
 export async function getPending(q: Queryable, id: string): Promise<Pending | null> {
   const { rows } = await q.query<{
     id: string; user_id: number; chat_id: number; kind: PendingKind; payload: PendingPayload | string; status: Pending["status"];
-    version: number; expires_at: Date; result_id: number | null;
-  }>("SELECT id, user_id, chat_id, kind, payload, status, version, expires_at, result_id FROM telegram_pending_actions WHERE id = $1", [id]);
+    version: number; expires_at: Date; result_id: number | null; channel: Channel; external_ref: string | null;
+  }>(
+    "SELECT id, user_id, chat_id, kind, payload, status, version, expires_at, result_id, channel, external_ref FROM telegram_pending_actions WHERE id = $1",
+    [id],
+  );
   const r = rows[0];
   if (!r) return null;
   return {
@@ -141,12 +174,14 @@ export async function getPending(q: Queryable, id: string): Promise<Pending | nu
     version: r.version,
     expiresAt: r.expires_at,
     resultId: r.result_id,
+    channel: r.channel,
+    externalRef: r.external_ref,
   };
 }
 
 /** Motivo pelo qual uma ação não pode mais ser usada (ou null se pode). */
-export function pendingProblem(p: Pending | null, userId: number, version?: number): string | null {
-  if (!p || p.userId !== userId) return "Esta ação não está mais disponível.";
+export function pendingProblem(p: Pending | null, userId: number, version?: number, channel: Channel = "telegram"): string | null {
+  if (!p || p.userId !== userId || p.channel !== channel) return "Esta ação não está mais disponível.";
   if (p.status === "confirmed") return "Isso já foi registrado. ✅";
   if (p.status === "cancelled") return "Esta ação foi cancelada.";
   if (p.status === "expired" || p.expiresAt < now()) return "Esta confirmação expirou. Envie a mensagem de novo.";
@@ -168,13 +203,16 @@ export async function setPendingMessage(q: Queryable, id: string, payload: Pendi
   await q.query("UPDATE telegram_pending_actions SET payload = $2 WHERE id = $1", [id, JSON.stringify({ ...payload, messageId })]);
 }
 
-export async function cancelPending(q: Queryable, id: string, userId: number) {
-  const r = await q.query("UPDATE telegram_pending_actions SET status = 'cancelled' WHERE id = $1 AND user_id = $2 AND status = 'pending'", [id, userId]);
+export async function cancelPending(q: Queryable, id: string, userId: number, channel: Channel = "telegram") {
+  const r = await q.query(
+    "UPDATE telegram_pending_actions SET status = 'cancelled' WHERE id = $1 AND user_id = $2 AND channel = $3 AND status = 'pending'",
+    [id, userId, channel],
+  );
   return r.rowCount > 0;
 }
 
-export async function cancelAllPending(q: Queryable, userId: number) {
-  const r = await q.query("UPDATE telegram_pending_actions SET status = 'cancelled' WHERE user_id = $1 AND status = 'pending'", [userId]);
+export async function cancelAllPending(q: Queryable, userId: number, channel: Channel = "telegram") {
+  const r = await q.query("UPDATE telegram_pending_actions SET status = 'cancelled' WHERE user_id = $1 AND channel = $2 AND status = 'pending'", [userId, channel]);
   return r.rowCount;
 }
 
@@ -189,17 +227,18 @@ export async function confirmPending<T>(
   userId: number,
   version: number,
   execute: (q: Queryable, p: Pending) => Promise<{ resultId: number; value: T }>,
+  channel: Channel = "telegram",
 ): Promise<{ ok: true; value: T } | { ok: false; reason: string }> {
   return db.tx(async (q) => {
     const { rows } = await q.query<{ id: string }>(
       `UPDATE telegram_pending_actions SET status = 'confirmed'
-        WHERE id = $1 AND user_id = $2 AND status = 'pending' AND version = $3 AND expires_at > $4
+        WHERE id = $1 AND user_id = $2 AND channel = $5 AND status = 'pending' AND version = $3 AND expires_at > $4
         RETURNING id`,
-      [id, userId, version, now()],
+      [id, userId, version, now(), channel],
     );
     if (!rows[0]) {
       const p = await getPending(q, id);
-      return { ok: false as const, reason: pendingProblem(p, userId, version) ?? "Esta ação não está mais disponível." };
+      return { ok: false as const, reason: pendingProblem(p, userId, version, channel) ?? "Esta ação não está mais disponível." };
     }
     const p = (await getPending(q, id))!;
     const out = await execute(q, p);

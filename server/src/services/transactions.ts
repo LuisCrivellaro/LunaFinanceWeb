@@ -6,7 +6,7 @@ import { badRequest, forbidden, notFound } from "../lib/errors.js";
 import { parse, zCents, zDate, zId, zKind } from "../lib/validate.js";
 import { assertOwner, resolveScope, type AuthUser, type ViewRequest } from "./access.js";
 import { getOwnAccount } from "./accounts.js";
-import { audit, type Source } from "./audit.js";
+import { audit, recordSource, type Source } from "./audit.js";
 import { assertCategory } from "./categories.js";
 
 export interface TransactionRow {
@@ -77,6 +77,8 @@ export const TxInput = z
     nature: z.enum(["fixed", "variable"]).default("variable"),
     notes: z.string().trim().max(500).optional().nullable(),
     paymentMethod: z.enum(PAYMENT_METHODS).optional().nullable(),
+    /** Identificador externo da mensagem/operação que originou o lançamento (canais). */
+    externalRef: z.string().trim().max(200).optional().nullable(),
     installments: z.number().int().min(2, "Parcelamento a partir de 2x.").max(72, "Máximo de 72 parcelas.").optional().nullable(),
     /** Se verdadeiro, `amountCents` é o valor de CADA parcela; senão, é o total a dividir. */
     amountIsPerInstallment: z.boolean().optional(),
@@ -105,7 +107,7 @@ export async function createTransactionWith(q: Queryable, user: AuthUser, body: 
   {
     const accountId = await getOwnAccount(q, user, input.accountId);
     const categoryId = await assertCategory(q, input.categoryId, input.kind);
-    const src = source === "telegram" ? "telegram" : "web";
+    const src = recordSource(source);
     const base = { accountId, categoryId };
     let ids: number[] = [];
 
@@ -154,11 +156,11 @@ async function insertOne(
   const paidAt = status === "paid" ? (extra.date ? date : (input.paidAt ?? date)) : null;
   const { rows } = await q.query<{ id: number }>(
     `INSERT INTO transactions (user_id, account_id, category_id, kind, amount_cents, description, date, status, paid_at,
-        nature, notes, recurrence_id, installment_group, installment_number, installment_total, source, created_by, payment_method)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$1,$17) RETURNING id`,
+        nature, notes, recurrence_id, installment_group, installment_number, installment_total, source, created_by, payment_method, external_ref)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$1,$17,$18) RETURNING id`,
     [user.id, base.accountId, base.categoryId, input.kind, extra.amount ?? input.amountCents, input.description, date, status, paidAt,
      input.nature, input.notes ?? null, extra.recurrenceId ?? null, extra.group ?? null, extra.number ?? null, extra.total ?? null, source,
-     input.paymentMethod ?? null],
+     input.paymentMethod ?? null, input.externalRef ?? null],
   );
   return rows[0].id;
 }

@@ -10,7 +10,7 @@ import { badRequest, notFound } from "../lib/errors.js";
 import { parse, zCents, zDate, zId } from "../lib/validate.js";
 import { assertOwner, type AuthUser } from "./access.js";
 import { getOwnAccount } from "./accounts.js";
-import { audit, type Source } from "./audit.js";
+import { audit, recordSource, type Source } from "./audit.js";
 
 export interface TransferRow {
   id: number;
@@ -53,7 +53,7 @@ export async function createTransferWith(q: Queryable, user: AuthUser, body: unk
   const { rows } = await q.query<{ id: number }>(
     `INSERT INTO transfers (user_id, from_account_id, to_account_id, amount_cents, date, description, source, created_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$1) RETURNING id`,
-    [user.id, input.fromAccountId, input.toAccountId, input.amountCents, input.date, input.description ?? null, source === "telegram" ? "telegram" : "web"],
+    [user.id, input.fromAccountId, input.toAccountId, input.amountCents, input.date, input.description ?? null, recordSource(source)],
   );
   await audit(q, { userId: user.id, action: "transfer.create", entity: "transfer", entityId: rows[0].id, source, details: { amountCents: input.amountCents } });
   return (await getTransfer(q, rows[0].id))!;

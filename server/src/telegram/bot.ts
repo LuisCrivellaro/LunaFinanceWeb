@@ -18,7 +18,7 @@ import { contributeWith, createGoalWith, listGoals } from "../services/goals.js"
 import {
   createTransactionWith, deleteTransactionWith, getTransactions, markPaid, PAYMENT_LABELS, PAYMENT_METHODS, updateTransactionWith, type PaymentMethod,
 } from "../services/transactions.js";
-import { createTransferWith } from "../services/transfers.js";
+import { executePending, type ExecResult } from "../channels/execute.js";
 import type { InlineButton } from "./api.js";
 import { isPermanentTelegramError, TelegramError } from "./api.js";
 import { findPossibleDuplicate } from "./data.js";
@@ -767,6 +767,9 @@ async function cardText(ctx: AppContext, user: AuthUser, payload: PendingPayload
       return txUpdateCard(payload.update);
     case "tx_delete":
       return txDeleteCard(payload.del);
+    case "invoice_payment":
+      // o Telegram não cria este rascunho (só o WhatsApp); texto neutro por segurança
+      return `💳 <b>Marcar a fatura ${esc(payload.invoice.invoiceMonth)} como paga</b> — ${brl(payload.invoice.amountCents)}.\nDeseja confirmar?`;
   }
 }
 
@@ -1205,6 +1208,30 @@ async function setField(ctx: AppContext, user: User, cb: TgCallbackQuery, p: Pen
   await ctx.telegram!.answerCallbackQuery(cb.id);
 }
 
+/** Texto de confirmação do Telegram a partir do que foi efetivamente gravado. */
+function confirmedText(r: ExecResult): string {
+  switch (r.kind) {
+    case "transaction": {
+      const d = r.draft;
+      return `✅ <b>Registrado no Luna Finance</b>\n${d.kind === "income" ? "Receita" : "Despesa"}: ${esc(d.description)} — <b>${brl(d.amountCents)}</b>` +
+        `${r.transactions.length > 1 ? ` em ${r.transactions.length} parcelas` : ""} (${dateLabel(d.date)}).\nJá aparece no site; você pode editar por lá.`;
+    }
+    case "goal":
+      return `✅ <b>Meta criada:</b> ${esc(r.goal.name)} — ${brl(r.goal.targetCents)}.\nEnvie <i>guardei 200 na meta ${esc(r.goal.name.toLowerCase())}</i> para registrar contribuições.`;
+    case "contribution":
+      return `✅ <b>${r.amountCents < 0 ? "Retirada registrada" : "Contribuição registrada"}</b> em ${esc(r.goal.name)}.\n` +
+        `Agora: ${brl(r.goal.savedCents)} de ${brl(r.goal.targetCents)} (${Math.round(r.goal.percent)}%)${r.goal.achievedAt ? " — meta atingida! 🎉" : ""}.`;
+    case "transfer":
+      return `✅ <b>Transferência registrada</b>\n${esc(r.transfer.fromAccountName)} → ${esc(r.transfer.toAccountName)}: <b>${brl(r.transfer.amountCents)}</b> (${dateLabel(r.transfer.date)}).\nO saldo de cada conta já foi atualizado.`;
+    case "tx_update":
+      return `✅ <b>Lançamento alterado</b>\n${esc(r.transaction.description)} — ${brl(r.transaction.amountCents)} (${dtFull(r.transaction.date)}).`;
+    case "tx_delete":
+      return `🗑️ <b>Excluído:</b> ${esc(r.deleted.description)} — ${brl(r.deleted.amountCents)}.`;
+    case "invoice_payment":
+      return `✅ <b>Fatura ${esc(r.payment.invoiceMonth)} marcada como paga.</b>`;
+  }
+}
+
 async function confirm(ctx: AppContext, user: User, cb: TgCallbackQuery, p: Pending, messageId: number, op: string) {
   const tg = ctx.telegram!;
   if (p.payload.kind === "transfer" && (!p.payload.transfer.fromAccountId || !p.payload.transfer.toAccountId)) {
@@ -1214,52 +1241,9 @@ async function confirm(ctx: AppContext, user: User, cb: TgCallbackQuery, p: Pend
   let result;
   try {
     result = await confirmPending(ctx.db, p.id, user.id, p.version, async (q, locked) => {
-      const pl = locked.payload;
-      if (pl.kind === "transaction") {
-        const d = pl.draft;
-        const created = await createTransactionWith(
-          q,
-          user,
-          {
-            kind: d.kind, amountCents: d.amountCents, description: d.description, date: d.date, status: d.status,
-            categoryId: d.categoryId, installments: d.installments, paymentMethod: d.paymentMethod, accountId: d.accountId,
-          },
-          "telegram",
-        );
-        return {
-          resultId: created[0].id,
-          value: `✅ <b>Registrado no Luna Finance</b>\n${d.kind === "income" ? "Receita" : "Despesa"}: ${esc(d.description)} — <b>${brl(d.amountCents)}</b>` +
-            `${created.length > 1 ? ` em ${created.length} parcelas` : ""} (${dateLabel(d.date)}).\nJá aparece no site; você pode editar por lá.`,
-        };
-      }
-      if (pl.kind === "goal") {
-        const g = await createGoalWith(q, user, { name: pl.goal.name, targetCents: pl.goal.targetCents, deadline: pl.goal.deadline, scope: pl.goal.scope }, "telegram");
-        return { resultId: g.id, value: `✅ <b>Meta criada:</b> ${esc(g.name)} — ${brl(g.targetCents)}.\nEnvie <i>guardei 200 na meta ${esc(g.name.toLowerCase())}</i> para registrar contribuições.` };
-      }
-      if (pl.kind === "contribution") {
-        const r = await contributeWith(q, user, pl.contribution.goalId, { amountCents: pl.contribution.amountCents }, "telegram");
-        return {
-          resultId: r.id,
-          value: `✅ <b>${pl.contribution.amountCents < 0 ? "Retirada registrada" : "Contribuição registrada"}</b> em ${esc(r.goal.name)}.\n` +
-            `Agora: ${brl(r.goal.savedCents)} de ${brl(r.goal.targetCents)} (${Math.round(r.goal.percent)}%)${r.goal.achievedAt ? " — meta atingida! 🎉" : ""}.`,
-        };
-      }
-      if (pl.kind === "transfer") {
-        const t = pl.transfer;
-        const tr = await createTransferWith(q, user, { fromAccountId: t.fromAccountId, toAccountId: t.toAccountId, amountCents: t.amountCents, date: t.date }, "telegram");
-        return {
-          resultId: tr.id,
-          value: `✅ <b>Transferência registrada</b>\n${esc(tr.fromAccountName)} → ${esc(tr.toAccountName)}: <b>${brl(tr.amountCents)}</b> (${dateLabel(tr.date)}).\nO saldo de cada conta já foi atualizado.`,
-        };
-      }
-      if (pl.kind === "tx_update") {
-        const u = pl.update;
-        const updated = await updateTransactionWith(q, user, u.txId, u.patch, "telegram");
-        return { resultId: updated.id, value: `✅ <b>Lançamento alterado</b>\n${esc(updated.description)} — ${brl(updated.amountCents)} (${dtFull(updated.date)}).` };
-      }
-      const d = pl.del;
-      await deleteTransactionWith(q, user, d.txId, "one", "telegram");
-      return { resultId: d.txId, value: `🗑️ <b>Excluído:</b> ${esc(d.description)} — ${brl(d.amountCents)}.` };
+      // a gravação é a mesma de todos os canais; aqui só formatamos a resposta
+      const { resultId, result: r } = await executePending(q, user, locked.payload, "telegram");
+      return { resultId, value: confirmedText(r) };
     });
   } catch (err) {
     // NADA foi gravado (a transação do banco foi desfeita) e a ação segue pendente.

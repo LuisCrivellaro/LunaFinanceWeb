@@ -20,6 +20,14 @@ import {
 import { createLinkCode, unlinkTelegram } from "../telegram/linking.js";
 import { createTransfer, deleteTransfer, listTransfers } from "../services/transfers.js";
 import { wallet } from "../services/wallet.js";
+import { archiveBudget, budgetStatus, createBudget } from "../services/budgets.js";
+import { getCardSettings, invoiceSummary, limitStatus, listCards, updateCardSettings } from "../services/cards.js";
+import { assertCanManageFamily } from "../services/access.js";
+import {
+  adminLink, createCredential, createLinkCode as createWhatsAppLinkCode, getSettings as getIntegrationSettings, listCredentials, myWhatsApp, resetPin, revokeCredential,
+  revokeSessions, setPin, unlink as unlinkWhatsApp, updateSettings as updateIntegrationSettings,
+} from "../integrations/openbot/identity.js";
+import { integrationOverview, selfTest } from "../integrations/openbot/overview.js";
 
 export function apiRouter(ctx: AppContext) {
   const r = Router();
@@ -172,6 +180,74 @@ export function apiRouter(ctx: AppContext) {
     return { ok: true };
   }));
   r.get("/telegram/status", h(async () => ({ configured: config.telegram.enabled, botUsername: config.telegram.botUsername || null })));
+
+  // ---------------- Cartões e fatura da família ----------------
+  r.get("/cards", h(async (req) => ({
+    settings: await getCardSettings(db),
+    ...(await listCards(db, req.user!)),
+    invoice: await invoiceSummary(db, req.user!, req.query.month as string | undefined),
+    limit: await limitStatus(db, req.user!),
+  })));
+  r.patch("/cards/settings", h(async (req) => updateCardSettings(db, req.user!, req.body ?? {})));
+
+  // ---------------- Orçamentos ----------------
+  r.get("/budgets", h(async (req) => budgetStatus(db, req.user!, req.query.month as string | undefined)));
+  r.post("/budgets", h(async (req) => createBudget(db, req.user!, req.body)));
+  r.delete("/budgets/:id", h(async (req) => {
+    await archiveBudget(db, req.user!, idParam(req));
+    return { ok: true };
+  }));
+
+  // ---------------- Sincronização: marcador de mudanças ----------------
+  // O site consulta a cada poucos segundos; quando muda (ex.: lançamento pelo
+  // WhatsApp), invalida as consultas do TanStack Query. Não traz dados.
+  r.get("/sync", h(async () => {
+    const { rows } = await db.query<{ v: string | null }>("SELECT max(id)::text AS v FROM audit_log");
+    return { marker: rows[0].v ?? "0" };
+  }));
+
+  // ---------------- WhatsApp da própria pessoa ----------------
+  r.get("/me/whatsapp", h(async (req) => ({ ...(await myWhatsApp(db, req.user!)), integrationEnabled: (await getIntegrationSettings(db)).enabled })));
+  r.post("/me/whatsapp/link-code", rateLimit({ windowMs: 10 * 60000, max: 10, key: (req) => `wlc:${req.user?.id}` }), h(async (req) => createWhatsAppLinkCode(db, req.user!, req.body?.phone)));
+  r.put("/me/whatsapp/pin", rateLimit({ windowMs: 10 * 60000, max: 10, key: (req) => `wpin:${req.user?.id}` }), h(async (req) => {
+    await setPin(db, req.user!, req.body?.pin, req.body?.password);
+    return { ok: true };
+  }));
+  r.delete("/me/whatsapp", h(async (req) => {
+    await unlinkWhatsApp(db, req.user!, req.user!.id);
+    return { ok: true };
+  }));
+  r.delete("/me/whatsapp/sessions", h(async (req) => ({ revoked: await revokeSessions(db, req.user!, req.user!.id) })));
+
+  // ---------------- Integração OpenBot (quem gerencia a família) ----------------
+  r.get("/integrations/openbot", h(async (req) => {
+    assertCanManageFamily(req.user!);
+    return integrationOverview(db);
+  }));
+  r.patch("/integrations/openbot/settings", h(async (req) => updateIntegrationSettings(db, req.user!, req.body ?? {})));
+  r.post("/integrations/openbot/credentials", h(async (req) => createCredential(db, req.user!, req.body ?? {})));
+  r.get("/integrations/openbot/credentials", h(async (req) => {
+    assertCanManageFamily(req.user!);
+    return listCredentials(db);
+  }));
+  r.delete("/integrations/openbot/credentials/:id", h(async (req) => {
+    await revokeCredential(db, req.user!, idParam(req));
+    return { ok: true };
+  }));
+  r.post("/integrations/openbot/members/:id/link", h(async (req) => adminLink(db, req.user!, idParam(req), req.body?.phone)));
+  r.delete("/integrations/openbot/members/:id/link", h(async (req) => {
+    await unlinkWhatsApp(db, req.user!, idParam(req));
+    return { ok: true };
+  }));
+  r.delete("/integrations/openbot/members/:id/sessions", h(async (req) => ({ revoked: await revokeSessions(db, req.user!, idParam(req)) })));
+  r.delete("/integrations/openbot/members/:id/pin", h(async (req) => {
+    await resetPin(db, req.user!, idParam(req));
+    return { ok: true };
+  }));
+  r.post("/integrations/openbot/test", h(async (req) => {
+    assertCanManageFamily(req.user!);
+    return selfTest(db);
+  }));
 
   r.get("/health/me", h(async () => ({ today: today() })));
   return r;

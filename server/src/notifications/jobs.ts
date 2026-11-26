@@ -11,6 +11,7 @@ import { monthTotals } from "../services/insights.js";
 import { brl, dt, esc, signed } from "../telegram/format.js";
 import { isPermanentTelegramError, type InlineButton } from "../telegram/api.js";
 import { ensureWebhook } from "../telegram/setup.js";
+import { enqueueChannelNotifications } from "./queue.js";
 
 interface LinkedUser {
   id: number;
@@ -246,6 +247,15 @@ export async function notifySummaries(ctx: AppContext, users: LinkedUser[], hour
 export async function runScheduledJobs(ctx: AppContext, opts: { force?: boolean } = {}) {
   const result: Record<string, number> = {};
   result.recurrences = await generateAllRecurrences(ctx.db);
+  // fila do WhatsApp (OpenBot): só enfileira; a entrega é feita pelo OpenBot
+  try {
+    const queued = await enqueueChannelNotifications(ctx, opts);
+    result.whatsappQueued = Object.values(queued).reduce((s, n) => s + n, 0);
+  } catch (err) {
+    ctx.log.warn("fila_whatsapp.falhou", { err: (err as Error).message.slice(0, 160) });
+  }
+  await ctx.db.query("UPDATE telegram_pending_actions SET status = 'expired' WHERE channel = 'whatsapp' AND status = 'pending' AND expires_at < $1", [now()]);
+  await ctx.db.query("DELETE FROM integration_requests WHERE created_at < $1", [new Date(now().getTime() - 7 * 86400000)]);
   if (!ctx.telegram) return { ...result, telegram: 0 };
   try {
     result.webhookRestored = (await ensureWebhook(ctx)) ? 1 : 0;

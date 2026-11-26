@@ -1,6 +1,11 @@
 import type { Queryable } from "../db/index.js";
 
-export type Source = "web" | "telegram" | "system" | "cli";
+export type Source = "web" | "telegram" | "whatsapp" | "system" | "cli";
+
+/** Origem gravada em lançamentos/transferências (canais de mensagem viram a própria origem). */
+export function recordSource(source: Source): "web" | "telegram" | "whatsapp" {
+  return source === "telegram" || source === "whatsapp" ? source : "web";
+}
 
 export interface AuditEntry {
   userId: number | null;

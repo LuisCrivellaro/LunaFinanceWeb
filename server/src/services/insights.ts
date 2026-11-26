@@ -276,7 +276,7 @@ export async function exportCsv(q: Queryable, viewer: AuthUser, view: ViewReques
         r.nature === "fixed" ? "Fixa" : "Variável",
         r.installmentNumber ? `${r.installmentNumber}/${r.installmentTotal}` : "",
         r.paymentMethod ? PAYMENT_LABELS[r.paymentMethod] : "",
-        r.source === "telegram" ? "Telegram" : r.source === "recurrence" ? "Recorrência" : "Site",
+        r.source === "telegram" ? "Telegram" : r.source === "whatsapp" ? "WhatsApp" : r.source === "recurrence" ? "Recorrência" : "Site",
         r.notes ?? "",
       ].map(csvCell).join(";"),
     );

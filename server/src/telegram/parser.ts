@@ -31,6 +31,10 @@ export interface Draft {
   accountId: number | null;
   /** Trecho exato do valor como foi escrito — para conferência. */
   amountText: string;
+  /** Campos usados por canais externos (WhatsApp); o Telegram não os preenche. */
+  recurrence?: { endDate: string | null; autoPaid: boolean } | null;
+  notes?: string | null;
+  externalRef?: string | null;
 }
 
 export type EntryParse =

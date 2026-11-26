@@ -8,6 +8,7 @@ import type { AppContext } from "./context.js";
 import { authenticate, csrfGuard, errorHandler, rateLimit } from "./http.js";
 import { safeEqual } from "./lib/crypto.js";
 import { apiRouter } from "./routes/api.js";
+import { openbotRouter } from "./integrations/openbot/router.js";
 import { handleUpdate, RetryableError } from "./telegram/bot.js";
 import { runScheduledJobs } from "./notifications/jobs.js";
 
@@ -101,6 +102,10 @@ export function createApp(ctx: AppContext) {
       res.status(500).json({ ok: false });
     }
   });
+
+  // ---------- API de integração do OpenBot (WhatsApp) ----------
+  // Antes da API do site: autenticação própria (Bearer + sessão), sem cookies/CSRF.
+  app.use("/api/integrations/openbot/v1", openbotRouter(ctx));
 
   // ---------- API do site ----------
   app.use("/api", express.json({ limit: "200kb" }), cookieParser(), authenticate(ctx), csrfGuard, (req, res, next) => {
