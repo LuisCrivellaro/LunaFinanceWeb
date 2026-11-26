@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Download, Plus, ReceiptText, Repeat, Search, Send } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, MessageCircle, Plus, ReceiptText, Repeat, Search, Send } from "lucide-react";
 import { get, qs } from "../lib/api";
 import { useApp, useCategories, useMe, useMemberLookup, viewParam } from "../lib/app";
 import { currentYm, dateHeading, firstName, monthBounds, monthLong, money, shiftYm, todayIso } from "../lib/format";
@@ -202,6 +202,7 @@ export function TransactionsPage() {
                           {t.paymentMethod && <span>· {PAYMENT_LABELS[t.paymentMethod]}</span>}
                           {t.recurrenceId && <Repeat size={12} aria-label="Recorrente" />}
                           {t.source === "telegram" && <Send size={12} aria-label="Registrado pelo Telegram" />}
+                          {t.source === "whatsapp" && <MessageCircle size={12} aria-label="Registrado pelo WhatsApp" />}
                           {t.status === "pending" && <StatusChip status={t.status} overdue={t.overdue} kind={t.kind} />}
                           {view !== "me" && owner && (
                             <span className="row" style={{ gap: 5 }}>

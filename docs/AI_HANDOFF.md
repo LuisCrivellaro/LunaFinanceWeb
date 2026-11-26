@@ -3,52 +3,60 @@
 > Arquivo de continuidade entre sessões. Atualize ao fim de cada etapa.
 
 ## Objetivo
-Preparar o Luna Finance para um agente externo no OpenBot atender os 4 membros da família pelo WhatsApp
-(pedido completo: ver o histórico da sessão / PR). Branch dedicada: `feat/openbot-whatsapp`
-(criada a partir de `feat/cartoes-da-familia`, PR #1, porque usa o Wallet Stack). Não fazer merge na main.
+Preparar o Luna Finance para um agente externo no OpenBot atender os 4 membros da família pelo WhatsApp.
+Branch: `feat/openbot-whatsapp` (criada de `feat/cartoes-da-familia`, PR #1, porque usa o Wallet Stack).
+**Não fazer merge na main.** Sessão anterior parou por limite de consumo (88% da janela de 5 h).
 
 ## Decisões técnicas
-- **OpenBot (pesquisado na doc e no código):** app local/servidor que roda agentes de IA; WhatsApp por
-  cliente não oficial (linked device). O remetente real (`authorId`, dígitos com país) é definido pela
-  plataforma, mas quem chama nossa API é o próprio agente (curl/MCP) — não há campo assinado que prove o
-  remetente ao servidor. Não existe webhook de saída do OpenBot para servidores externos.
-- **Por isso, autenticação em 3 camadas:** credencial da integração (`Bearer lfo_…`, hash, escopos,
-  revogável) + vínculo do número por código de uso único gerado no site (ou admin) + **sessão por pessoa
-  aberta com PIN pessoal** (`X-Luna-Session`), conferida contra `X-Luna-Sender` a cada chamada.
-- Escritas sempre por rascunho (tabela `telegram_pending_actions`, coluna `channel='whatsapp'`),
-  versionado, 15 min, confirmação atômica (`confirmPending`). Executor comum aos canais:
-  `server/src/channels/execute.ts` (o Telegram passou a usar).
-- Idempotência: `Idempotency-Key` obrigatório em POST (`integration_requests`) + `external_ref` no rascunho.
-- Cartões/fatura: `card_settings` (titular, fechamento, vencimento, limite), `card_invoice_payments`
-  (pagar fatura NÃO cria despesa). Ciclo: fatura M = compras de [fechamento M−1, fechamento M).
-- Orçamentos: tabela `budgets` + `services/budgets.ts` (70/90/100%).
-- Fila de avisos: `notification_queue` (dedup, claim/ack); enfileirada pelo agendador existente; nada é enviado.
-- Sincronização do site: `GET /api/sync` (max(audit_log.id)) — o front faz polling e invalida queries.
+- **OpenBot (verificado na doc e no código):** app local/servidor que roda agentes de IA; WhatsApp por cliente
+  não oficial (linked device). O remetente real (`authorId`) é da plataforma, mas quem chama a API é o agente —
+  nada prova o remetente ao servidor; não há webhook de saída do OpenBot.
+- **Autenticação em 3 camadas:** credencial (`Bearer lfo_…`, hash, escopos link/read/write/notifications,
+  revogável) + vínculo do número (código de uso único gerado no site, ou admin) + **sessão por pessoa com PIN**
+  (`X-Luna-Session`, conferida contra `X-Luna-Sender` a cada chamada; 5 erros = bloqueio 15 min).
+- Escrita sempre por rascunho (`telegram_pending_actions.channel='whatsapp'`), versionado, 15 min, confirmação
+  atômica. Executor comum: `server/src/channels/execute.ts` (o Telegram passou a usar).
+- Idempotência: `Idempotency-Key` obrigatório em POST (`integration_requests`) + `external_ref` nos rascunhos.
+- Cartões/fatura: `card_settings`, `card_invoice_payments` (pagar fatura não cria despesa). Ciclo: fatura M =
+  compras de [fechamento M−1, fechamento M).
+- Orçamentos: `budgets` + `services/budgets.ts`. Fila de avisos: `notification_queue` (claim/ack, dedup).
+- Sincronização do site: `GET /api/sync` + `useLiveSync()` (polling 20 s, invalida queries).
 
-## Etapas
-- [x] Auditoria + pesquisa OpenBot
-- [x] Migração 5 (`server/src/db/migrations.ts`) — sobe/desce/sobe testado
-- [x] Serviços: `services/cards.ts`, `services/budgets.ts`, `channels/execute.ts`, origem `whatsapp`
-- [x] Integração: `server/src/integrations/phone.ts`, `integrations/openbot/{identity,operations,queries,router,openapi,overview}.ts`
-- [x] Fila: `server/src/notifications/queue.ts` (+ gancho em `jobs.ts`)
-- [x] Rotas do site em `routes/api.ts` (/cards, /budgets, /sync, /me/whatsapp*, /integrations/openbot*)
-- [x] Typecheck do servidor OK; testes do Telegram OK após refatoração (104/104)
-- [ ] **Testes** `server/test/openbot.test.ts` (identificação dos 4, número não autorizado, falsificação,
-      receitas/despesas, parcelado, duplicidade, retentativa, confirmação simultânea, permissões, isolamento,
-      fatura, sync, fila) + teste de sincronia do `openapi.json`
-- [ ] **Frontend:** Configurações → seção "Integrações" (admin + "Seu WhatsApp"), cartões/fatura e orçamentos,
-      ícone WhatsApp em `pages/Transactions.tsx` (padrão do Telegram: `Send`), hook de sync em `lib/app.tsx`
-- [ ] **Docs** `integrations/openbot/`: AGENT_INSTRUCTIONS.md, AGENT_INSTRUCTIONS_SHORT.md (≤2000 chars),
-      TOOLS.md, openapi.json (gerar de `buildOpenApi()`), SETUP.md, TEST_CASES.md, .env.example, MCP opcional
-      (`integrations/openbot/mcp/luna-mcp.mjs`, stdio JSON-RPC sem dependências); README + docs/SEGURANCA.md
-- [ ] Validação final: `npm test` (use `--no-file-parallelism` se o PGlite derrubar workers no Windows),
-      `npm run typecheck`, `npm run build`, `npm run e2e` (precisa do Playwright + servidor com demo:seed)
-- [ ] Commit + push em `feat/openbot-whatsapp`
+## Concluído (commits na branch)
+- Migração 5; serviços `cards`, `budgets`, `channels/execute`; origem `whatsapp`.
+- `server/src/integrations/phone.ts` e `integrations/openbot/{identity,operations,queries,router,openapi,overview}.ts`.
+- `server/src/notifications/queue.ts` (+ gancho em `jobs.ts`).
+- Rotas do site (`routes/api.ts`): `/cards`, `/cards/settings`, `/budgets`, `/sync`, `/me/whatsapp*`,
+  `/integrations/openbot*` (painel, settings, credenciais, vínculo/PIN/sessões por pessoa, teste).
+- Frontend: ícone WhatsApp em `pages/Transactions.tsx`; `useLiveSync` em `components/Layout.tsx`.
+- Docs `integrations/openbot/`: AGENT_INSTRUCTIONS(.md/_SHORT.md), TOOLS.md, SETUP.md, TEST_CASES.md,
+  `.env.example`, `openapi.json` (gerado por `npm run openbot:openapi`; teste garante sincronia).
+- Testes: `server/test/openbot.test.ts` (38). Suíte completa: **239/239** (`npx vitest run --no-file-parallelism`).
+  `npm run typecheck` OK, `npm run build` OK.
+
+## Pendente (próximas etapas, nesta ordem)
+1. **Frontend — Configurações → seção "Integrações"** em `web/src/pages/Settings.tsx` (padrão `Section`):
+   - "Seu WhatsApp" (todos): status (`GET /api/me/whatsapp`), gerar código (`POST /api/me/whatsapp/link-code {phone}`),
+     definir PIN (`PUT /api/me/whatsapp/pin {pin, password}`), desvincular (`DELETE /api/me/whatsapp`).
+   - "OpenBot" (só `me.capabilities.manageMembers`): `GET /api/integrations/openbot` → status da API ×
+     status do WhatsApp (`whatsapp.status`: no_evidence/recent_activity/no_recent_activity — nunca "conectado"),
+     liga/desliga e opções (`PATCH …/settings {enabled, autoConfirm, pinRequired, sessionHours}`),
+     credenciais (`POST/DELETE …/credentials`, mostrar a chave uma vez), 4 pessoas (vincular por número,
+     desvincular, encerrar sessões, resetar PIN), botão Testar (`POST …/test`), histórico `events`, fila `notifications`.
+   - "Cartões e fatura" (admin): `PATCH /api/cards/settings {holderUserId, closingDay, dueDay, limitCents}`.
+   - "Orçamentos": `GET/POST/DELETE /api/budgets`.
+   - Adicionar os links na navegação lateral de Configurações (`links` em `SettingsPage`).
+2. README (seção "Integração OpenBot/WhatsApp" apontando para `integrations/openbot/SETUP.md`) e
+   `docs/SEGURANCA.md` (modelo de identidade com PIN, credenciais, idempotência).
+3. (Opcional) MCP: a doc do OpenBot não descreve o formato de config de MCP externo; integração oficial é HTTP+OpenAPI.
+4. `npm run e2e` (Playwright + servidor com `demo:seed`; não rodado nesta sessão) e ajustar `e2e/smoke.mjs` se preciso.
+5. Commit + push; abrir PR de `feat/openbot-whatsapp` (base: `feat/cartoes-da-familia` ou main depois do PR #1).
 
 ## Problemas conhecidos
 - Vitest em paralelo no Windows às vezes derruba workers (0xC0000409, PGlite). Em série passa.
+- Shell: heredocs grandes com aspas falham no Git Bash; grave scripts de edição em arquivo e rode com python.
 
 ## Próxima ação exata
-Escrever `server/test/openbot.test.ts` usando `setupTestApp()` de `server/test/helpers.ts`; criar
-credencial via `createCredential(db, adminUser, {})`, ligar a integração com `updateSettings`, vincular por
-`adminLink`, definir PIN com `setPin` (senha de teste `SenhaForte123`), abrir sessão em `POST /sessions`.
+Implementar o item 1 (seção "Integrações" em `web/src/pages/Settings.tsx`), rodar `npm run typecheck`,
+`npx vitest run --no-file-parallelism`, `npm run build`, verificar no navegador (preview `luna-web` + `luna-api`,
+login demo `lipe@demo.luna`), atualizar este arquivo, commit e push.

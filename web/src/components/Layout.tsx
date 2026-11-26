@@ -6,7 +6,7 @@ import {
   ReceiptText, Settings, Sun, Target,
 } from "lucide-react";
 import { get, post } from "../lib/api";
-import { useApp, useMe, useMemberLookup } from "../lib/app";
+import { useApp, useLiveSync, useMe, useMemberLookup } from "../lib/app";
 import { firstName, memberColor } from "../lib/format";
 import type { Me } from "../lib/types";
 import { Avatar } from "./ui";
@@ -142,6 +142,7 @@ function UserMenu({ me, color, onLogout }: { me: Me; color: string; onLogout(): 
 
 export function Layout() {
   const { data: me } = useMe();
+  useLiveSync(); // lançamentos feitos pelo WhatsApp/Telegram aparecem sem recarregar
   const { dark, setTheme, view, newTxPreset, openNewTransaction, closeNewTransaction } = useApp();
   const lookup = useMemberLookup();
   const qc = useQueryClient();

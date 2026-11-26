@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { get } from "./api";
 import type { Account, Category, Me, Member, View } from "./types";
@@ -124,8 +124,33 @@ export function useAccounts() {
 export function useInvalidateFinance() {
   const qc = useQueryClient();
   return () => {
-    for (const k of ["dashboard", "wallet", "transactions", "bills", "accounts", "reports", "goals", "recurrences"]) qc.invalidateQueries({ queryKey: [k] });
+    for (const k of FINANCE_KEYS) qc.invalidateQueries({ queryKey: [k] });
   };
+}
+
+const FINANCE_KEYS = ["dashboard", "wallet", "transactions", "bills", "accounts", "reports", "goals", "recurrences", "cards", "budgets"];
+
+/**
+ * Lançamentos externos (WhatsApp/Telegram): consulta um marcador leve a cada
+ * 20 s com a aba visível e, se mudou, invalida as consultas financeiras.
+ */
+export function useLiveSync() {
+  const qc = useQueryClient();
+  const last = useRef<string | null>(null);
+  const { data } = useQuery({
+    queryKey: ["sync"],
+    queryFn: () => get<{ marker: string }>("/sync"),
+    refetchInterval: 20_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+  });
+  useEffect(() => {
+    if (!data) return;
+    if (last.current !== null && last.current !== data.marker) {
+      for (const k of FINANCE_KEYS) qc.invalidateQueries({ queryKey: [k] });
+    }
+    last.current = data.marker;
+  }, [data, qc]);
 }
 
 export function useMemberLookup() {
