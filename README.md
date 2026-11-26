@@ -9,6 +9,7 @@ Gestão financeira da família — pelo site e pelo Telegram, no mesmo banco de 
 - **Metas** individuais e familiares, com contribuições, retiradas e progresso (fases da lua 🌒).
 - **Relatórios** mensais e anuais, por categoria e por responsável, com exportação **CSV** e **PDF** (impressão).
 - **Bot do Telegram**: menu com botões (💸 Gastei, 💰 Recebi, 📈 Economizei, 📊 Meu resumo, 🎯 Minhas metas, ⚙️ Configurações) e registro por linguagem natural (valor, data, categoria, conta e forma de pagamento) com resumo, edição e confirmação; consultas e relatórios; metas; pagamento de contas; avisos automáticos; IA opcional com ferramentas controladas. Guia: [`docs/TELEGRAM.md`](docs/TELEGRAM.md).
+- **WhatsApp via OpenBot** (opcional): um agente externo no OpenBot atende a família pelo WhatsApp e usa a API do Luna (consultas, lançamentos com confirmação, fatura, orçamentos e avisos). Configuração em **Configurações → Integrações**. Veja abaixo.
 
 ## Stack
 
@@ -46,6 +47,18 @@ Para usar dados reais em vez da demonstração, apague `.data/` e veja **Primeir
    Saem 4 links de uso único (válidos por 72h). Mande cada link **só** para a pessoa certa; ela define a própria senha.
 5. **Telegram**: siga [`docs/TELEGRAM.md`](docs/TELEGRAM.md).
 
+## Integração OpenBot/WhatsApp
+
+O Luna expõe uma API HTTP (`/api/integrations/openbot/v1`, contrato em [`integrations/openbot/openapi.json`](integrations/openbot/openapi.json)) para um agente do [OpenBot](integrations/openbot/SETUP.md) que conversa com a família pelo WhatsApp. Passo a passo completo: [`integrations/openbot/SETUP.md`](integrations/openbot/SETUP.md).
+
+Resumo:
+1. **Configurações → Integrações → OpenBot** (só para quem gerencia a família): ligue a integração e crie uma **credencial** (`lfo_…`, mostrada uma única vez) para colar no OpenBot.
+2. Cada pessoa, em **Configurações → Integrações → Seu WhatsApp**: gera um código de vinculação para o próprio número (10 min, uso único), envia `vincular CÓDIGO` ao agente e define um **PIN** (6–8 dígitos).
+3. No WhatsApp, a pessoa abre uma sessão com o PIN; toda gravação passa por rascunho e confirmação.
+4. O painel mostra o status da API e a **última mensagem autenticada** — o Luna não enxerga a conexão do WhatsApp em si (ela vive no OpenBot), então nunca exibe "conectado".
+
+Instruções do agente: [`AGENT_INSTRUCTIONS.md`](integrations/openbot/AGENT_INSTRUCTIONS.md) · ferramentas: [`TOOLS.md`](integrations/openbot/TOOLS.md) · cenários de teste: [`TEST_CASES.md`](integrations/openbot/TEST_CASES.md). Segurança: [`docs/SEGURANCA.md`](docs/SEGURANCA.md#whatsapp-via-openbot).
+
 ## Comandos
 
 | Comando | O que faz |
@@ -62,6 +75,7 @@ Para usar dados reais em vez da demonstração, apague `.data/` e veja **Primeir
 | `npm run db:migrate` / `npm run db:rollback -- --confirm` | aplica migrações / reverte a última (faça backup antes) |
 | `npm run telegram:set-webhook` / `:webhook-info` / `:delete-webhook` | gerencia o webhook |
 | `npm run telegram:poll` | bot local sem domínio público (só desenvolvimento) |
+| `npm run openbot:openapi` | regenera `integrations/openbot/openapi.json` (um teste garante a sincronia) |
 
 ## Segurança e privacidade
 
@@ -71,6 +85,7 @@ Resumo — detalhes em [`docs/SEGURANCA.md`](docs/SEGURANCA.md):
 - **Toda permissão é verificada no backend.** Cada pessoa só altera os próprios lançamentos. O que ela vê dos outros é configurável: `full` (tudo), `summary` (só totais) ou `none`.
 - O papel interno de quem gerencia o sistema **nunca** é enviado à interface como texto, selo ou rótulo, e não dá acesso extra a dados financeiros.
 - Telegram: webhook autenticado por segredo, vínculo por código temporário de uso único, deduplicação de updates, confirmação obrigatória antes de gravar.
+- WhatsApp/OpenBot: credencial revogável com escopos (só o hash no banco), vínculo do número por código de uso único, sessão por pessoa com PIN conferida contra o remetente a cada chamada, `Idempotency-Key` obrigatório e confirmação antes de gravar.
 - Log de auditoria das ações sensíveis; exclusão lógica de lançamentos; backup/restauração.
 
 ## Estrutura
@@ -82,9 +97,11 @@ server/src
   services/                       regras de negócio: access (permissões), auth, transactions, goals, insights…
   routes/api.ts                   API do site
   telegram/                       bot, vinculação, interpretador pt-BR, IA opcional
+  integrations/openbot/           API do OpenBot: identidade (credencial, vínculo, PIN), operações, OpenAPI
   notifications/jobs.ts           avisos e agendador
   scripts/                        família, backup/restore, webhook, demo
 server/test                       testes (unidades, permissões, finanças, Telegram)
 web/src                           React (páginas, componentes, design system em styles.css)
 e2e/smoke.mjs                     teste no navegador
+integrations/openbot/             guia de setup, instruções do agente, ferramentas e openapi.json
 ```

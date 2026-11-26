@@ -477,6 +477,20 @@ a.result-pill:hover {
   justify-content: flex-end;
   gap: 6px;
 }
+.integration-status {
+  gap: 6px;
+  padding: var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.list-item.budget-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.ob-member .sub .chip {
+  font-size: 11px;
+}
 @media (max-width: 1080px) {
   .settings {
     grid-template-columns: minmax(0, 1fr);
@@ -532,6 +546,9 @@ a.result-pill:hover {
   .member-actions {
     grid-column: 1 / -1;
     justify-content: flex-start;
+  }
+  .list-item.ob-member {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

@@ -33,6 +33,7 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
 export const get = <T>(p: string) => api<T>(p);
 export const post = <T>(p: string, body?: unknown) => api<T>(p, { method: "POST", body: body ?? {} });
 export const patch = <T>(p: string, body: unknown) => api<T>(p, { method: "PATCH", body });
+export const put = <T>(p: string, body: unknown) => api<T>(p, { method: "PUT", body });
 export const del = <T>(p: string) => api<T>(p, { method: "DELETE" });
 
 export function qs(params: Record<string, string | number | undefined | null | false>) {

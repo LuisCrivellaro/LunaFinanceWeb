@@ -34,29 +34,34 @@ Branch: `feat/openbot-whatsapp` (criada de `feat/cartoes-da-familia`, PR #1, por
 - Testes: `server/test/openbot.test.ts` (38). Suíte completa: **239/239** (`npx vitest run --no-file-parallelism`).
   `npm run typecheck` OK, `npm run build` OK.
 
+- **Frontend — Configurações → Integrações** (sessão de 26/11/2026): `web/src/pages/SettingsIntegrations.tsx`
+  (`WhatsAppSection`, `OpenBotSection`, `CardsSettingsSection`, `BudgetsSection`), `Section` extraído para
+  `web/src/components/SettingsSection.tsx`, helper `put` em `web/src/lib/api.ts`, links na navegação lateral
+  (Integrações: Seu WhatsApp, OpenBot*; Finanças: Orçamentos, Cartões e fatura*; *só `manageMembers`), CSS
+  `.integration-status`, `.list-item.ob-member`, `.list-item.budget-row` em `styles/pages.css`.
+  Só usa rotas existentes; nenhuma mudança no backend.
+- README (seção "Integração OpenBot/WhatsApp") e `docs/SEGURANCA.md` (seção "WhatsApp via OpenBot").
+- `e2e/smoke.mjs`: verifica "Seu WhatsApp"/"Orçamentos" para todos e OpenBot/cartões só para quem gerencia.
+- Verificação: `npm run typecheck` OK · `npx vitest run --no-file-parallelism` **239/239** · `npm run build` OK ·
+  `npm run e2e` **23/23** (servidor `npm start` + PGlite com `db:migrate` + `demo:seed`). Fluxos exercitados no
+  Chromium (Playwright): gerar código, definir PIN, ligar integração, criar credencial (chave exibida uma vez;
+  `GET /health` com ela = 200), vincular número pelo painel, testar integração, criar orçamento, salvar cartão;
+  login de não-gestor sem OpenBot/cartões; 375 px sem rolagem horizontal; zero erros de JS.
+
 ## Pendente (próximas etapas, nesta ordem)
-1. **Frontend — Configurações → seção "Integrações"** em `web/src/pages/Settings.tsx` (padrão `Section`):
-   - "Seu WhatsApp" (todos): status (`GET /api/me/whatsapp`), gerar código (`POST /api/me/whatsapp/link-code {phone}`),
-     definir PIN (`PUT /api/me/whatsapp/pin {pin, password}`), desvincular (`DELETE /api/me/whatsapp`).
-   - "OpenBot" (só `me.capabilities.manageMembers`): `GET /api/integrations/openbot` → status da API ×
-     status do WhatsApp (`whatsapp.status`: no_evidence/recent_activity/no_recent_activity — nunca "conectado"),
-     liga/desliga e opções (`PATCH …/settings {enabled, autoConfirm, pinRequired, sessionHours}`),
-     credenciais (`POST/DELETE …/credentials`, mostrar a chave uma vez), 4 pessoas (vincular por número,
-     desvincular, encerrar sessões, resetar PIN), botão Testar (`POST …/test`), histórico `events`, fila `notifications`.
-   - "Cartões e fatura" (admin): `PATCH /api/cards/settings {holderUserId, closingDay, dueDay, limitCents}`.
-   - "Orçamentos": `GET/POST/DELETE /api/budgets`.
-   - Adicionar os links na navegação lateral de Configurações (`links` em `SettingsPage`).
-2. README (seção "Integração OpenBot/WhatsApp" apontando para `integrations/openbot/SETUP.md`) e
-   `docs/SEGURANCA.md` (modelo de identidade com PIN, credenciais, idempotência).
-3. (Opcional) MCP: a doc do OpenBot não descreve o formato de config de MCP externo; integração oficial é HTTP+OpenAPI.
-4. `npm run e2e` (Playwright + servidor com `demo:seed`; não rodado nesta sessão) e ajustar `e2e/smoke.mjs` se preciso.
-5. Commit + push; abrir PR de `feat/openbot-whatsapp` (base: `feat/cartoes-da-familia` ou main depois do PR #1).
+1. Abrir PR de `feat/openbot-whatsapp` (base: `feat/cartoes-da-familia`, ou `main` depois do PR #1). **Sem merge na main.**
+2. Teste ponta a ponta real com o OpenBot + WhatsApp (seguir `integrations/openbot/TEST_CASES.md`) — exige a
+   instalação do OpenBot e um número; não é possível no container.
+3. (Opcional) MCP: a doc do OpenBot não descreve config de MCP externo; integração oficial segue HTTP+OpenAPI.
+4. Pedido em aberto: o usuário mencionou "atualizar a LOGO" no título da tarefa, sem detalhes (qual arquivo/arte).
+   Não foi feito — confirmar com ele antes.
 
 ## Problemas conhecidos
 - Vitest em paralelo no Windows às vezes derruba workers (0xC0000409, PGlite). Em série passa.
 - Shell: heredocs grandes com aspas falham no Git Bash; grave scripts de edição em arquivo e rode com python.
 
 ## Próxima ação exata
-Implementar o item 1 (seção "Integrações" em `web/src/pages/Settings.tsx`), rodar `npm run typecheck`,
-`npx vitest run --no-file-parallelism`, `npm run build`, verificar no navegador (preview `luna-web` + `luna-api`,
-login demo `lipe@demo.luna`), atualizar este arquivo, commit e push.
+Abrir o PR de `feat/openbot-whatsapp` (item 1) e, com o OpenBot instalado, rodar os cenários de
+`integrations/openbot/TEST_CASES.md`. Para rodar o e2e local: `cp .env.example .env` (APP_URL=http://localhost:3000),
+`npm run db:migrate && npm run demo:seed && npm run build && npm start`, depois `npm run e2e`.
+Atenção: não rode `demo:seed` com o servidor ligado (PGlite em `.data/` não aceita dois processos).

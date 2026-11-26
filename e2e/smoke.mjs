@@ -44,6 +44,11 @@ for (const email of ["lipe@demo.luna", "luciana@demo.luna"]) {
   check(found.length === 0, `${email}: nenhuma tela exibe ADM/administrador/dono ${found.join(",")}`);
   const hasPeople = await page.getByRole("heading", { name: "Pessoas da família" }).count();
   check(email.startsWith("lipe") ? hasPeople === 1 : hasPeople === 0, `${email}: área de pessoas ${hasPeople ? "visível" : "oculta"} conforme permissão interna`);
+  // Integrações: todos veem "Seu WhatsApp" e "Orçamentos"; OpenBot e cartão só quem gerencia
+  const heading = (name) => page.getByRole("heading", { name, exact: true }).count();
+  check((await heading("Seu WhatsApp")) === 1 && (await heading("Orçamentos")) === 1, `${email}: "Seu WhatsApp" e "Orçamentos" visíveis`);
+  const manage = (await heading("OpenBot")) + (await heading("Cartões e fatura"));
+  check(email.startsWith("lipe") ? manage === 2 : manage === 0, `${email}: OpenBot/cartões ${manage ? "visíveis" : "ocultos"} conforme permissão interna`);
   await ctx.close();
 }
 

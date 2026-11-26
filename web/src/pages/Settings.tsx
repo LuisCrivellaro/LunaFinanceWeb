@@ -1,25 +1,15 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Archive, ArrowLeftRight, Bell, Copy, ExternalLink, KeyRound, Link2, Plus, Send, Tags, Trash2, Unlink, UserRound, Users, Wallet, type LucideIcon,
+  Archive, ArrowLeftRight, Bell, Bot, Copy, CreditCard, ExternalLink, KeyRound, Link2, MessageCircle, PiggyBank, Plus, Send, Tags, Trash2, Unlink, UserRound, Users, Wallet, type LucideIcon,
 } from "lucide-react";
 import { del, get, patch, post } from "../lib/api";
 import { useAccounts, useApp, useCategories, useMe } from "../lib/app";
 import { centsToInput, dateFull, firstName, memberColor, money, parseCents, todayIso } from "../lib/format";
 import type { Me } from "../lib/types";
 import { Avatar, ICON_CHOICES, Icon, Modal, Skeleton, prefersReducedMotion } from "../components/ui";
-
-function Section({ id, title, desc, children }: { id: string; title: string; desc?: string; children: React.ReactNode }) {
-  return (
-    <section id={id} className="card settings-section" aria-labelledby={`${id}-t`}>
-      <header className="settings-section-head">
-        <h2 id={`${id}-t`}>{title}</h2>
-        {desc && <p>{desc}</p>}
-      </header>
-      <div className="stack">{children}</div>
-    </section>
-  );
-}
+import { Section } from "../components/SettingsSection";
+import { BudgetsSection, CardsSettingsSection, OpenBotSection, WhatsAppSection } from "./SettingsIntegrations";
 
 /** Campo do final do cartão (4 dígitos). Salva ao confirmar; vazio apaga. */
 function CardLast4Input({ value, onSave, label, compact, disabled }: { value: string | null; onSave(v: string | null): void; label: string; compact?: boolean; disabled?: boolean }) {
@@ -572,8 +562,12 @@ export function SettingsPage() {
     { id: "seguranca", label: "Senha", icon: KeyRound, group: "Você" },
     { id: "telegram", label: "Telegram", icon: Send, group: "Integrações" },
     { id: "notificacoes", label: "Avisos", icon: Bell, group: "Integrações" },
+    { id: "whatsapp", label: "Seu WhatsApp", icon: MessageCircle, group: "Integrações" },
+    ...(manage ? [{ id: "openbot", label: "OpenBot", icon: Bot, group: "Integrações" }] : []),
     { id: "contas", label: "Contas", icon: Wallet, group: "Finanças" },
     { id: "categorias", label: "Categorias", icon: Tags, group: "Finanças" },
+    { id: "orcamentos", label: "Orçamentos", icon: PiggyBank, group: "Finanças" },
+    ...(manage ? [{ id: "cartoes", label: "Cartões e fatura", icon: CreditCard, group: "Finanças" }] : []),
     ...(manage ? [{ id: "familia", label: "Pessoas", icon: Users, group: "Família" }] : []),
   ];
   const groups = Array.from(new Set(links.map((l) => l.group)));
@@ -609,8 +603,12 @@ export function SettingsPage() {
           <SecuritySection />
           <TelegramSection me={me} />
           <NotificationsSection me={me} />
+          <WhatsAppSection />
+          {manage && <OpenBotSection />}
           <AccountsSection />
           <CategoriesSection me={me} />
+          <BudgetsSection me={me} />
+          {manage && <CardsSettingsSection />}
           {manage && <FamilySection me={me} />}
         </div>
       </div>
