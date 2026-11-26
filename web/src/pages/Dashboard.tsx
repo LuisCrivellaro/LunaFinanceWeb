@@ -16,6 +16,7 @@ import {
   Avatar, CardSkeleton, CategoryIcon, Delta, Empty, ErrorState, Money, MoonPhase, Skeleton, StatusChip, ViewSwitch, useCountUp, useSpotlight,
 } from "../components/ui";
 import { TransactionForm } from "../components/TransactionForm";
+import { FamilyCards } from "../components/FamilyCards";
 
 interface ListResponse {
   items: Transaction[];
@@ -213,6 +214,7 @@ export function DashboardPage() {
             <CardSkeleton h={240} />
           </div>
           <div className="dash-side">
+            <CardSkeleton h={460} />
             <CardSkeleton h={160} />
             <CardSkeleton h={160} />
           </div>
@@ -380,6 +382,8 @@ export function DashboardPage() {
           </div>
 
           <aside className="dash-side reveal" aria-label="Resumo lateral">
+            <FamilyCards month={month} onOpen={setEditing} editableUserId={me?.id} />
+
             <div className="card">
               <div className="card-head">
                 <h2>Próximos pagamentos</h2>

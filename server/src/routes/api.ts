@@ -19,6 +19,7 @@ import {
 } from "../services/transactions.js";
 import { createLinkCode, unlinkTelegram } from "../telegram/linking.js";
 import { createTransfer, deleteTransfer, listTransfers } from "../services/transfers.js";
+import { wallet } from "../services/wallet.js";
 
 export function apiRouter(ctx: AppContext) {
   const r = Router();
@@ -146,6 +147,7 @@ export function apiRouter(ctx: AppContext) {
 
   // ---------------- Painel e relatórios ----------------
   r.get("/dashboard", h(async (req) => dashboard(db, req.user!, parseViewRequest(req.query.view), req.query.month as string | undefined)));
+  r.get("/wallet", h(async (req) => wallet(db, req.user!, req.query.month as string | undefined)));
   r.get("/reports", h(async (req) =>
     report(db, req.user!, parseViewRequest(req.query.view), {
       year: req.query.year as string | undefined,

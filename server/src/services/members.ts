@@ -7,6 +7,15 @@ import { createAccessLink, revokeAllSessions } from "./auth.js";
 /** Cor de cada pessoa — mesma "importância" visual para todos. */
 // Validada (skill dataviz: CVD ΔE ≥ 9 entre vizinhas, claro e escuro). O frontend
 // troca para o passo escuro equivalente no modo escuro.
+/** Final do cartão: exatamente 4 dígitos, ou vazio para apagar. */
+export function parseCardLast4(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  if (s === "") return null;
+  if (!/^\d{4}$/.test(s)) throw badRequest("O final do cartão deve ter exatamente 4 dígitos.");
+  return s;
+}
+
 export const MEMBER_PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#6250d6", "#e87ba4", "#eda100"];
 
 /**
@@ -36,6 +45,7 @@ export async function getProfile(q: Queryable, user: AuthUser) {
             u.notify_due_days AS "notifyDueDays", u.notify_overdue AS "notifyOverdue",
             u.notify_daily AS "notifyDaily", u.notify_weekly AS "notifyWeekly",
             u.notify_goals AS "notifyGoals", u.notify_anomaly AS "notifyAnomaly",
+            u.card_last4 AS "cardLast4",
             t.username AS "telegramUsername", t.linked_at AS "telegramLinkedAt"
        FROM users u LEFT JOIN telegram_links t ON t.user_id = u.id WHERE u.id = $1`,
     [user.id],
@@ -66,6 +76,7 @@ export async function updateProfile(q: Queryable, user: AuthUser, body: Record<s
     if (!HEX.test(String(body.color))) throw badRequest("Cor inválida.");
     put("color", body.color);
   }
+  if (body.cardLast4 !== undefined) put("card_last4", parseCardLast4(body.cardLast4));
   if (body.notifyDueDays !== undefined) {
     const n = Number(body.notifyDueDays);
     if (!Number.isInteger(n) || n < 0 || n > 15) throw badRequest("Antecedência deve ser de 0 a 15 dias.");
@@ -91,7 +102,7 @@ export async function listMembersForManagement(q: Queryable, actor: AuthUser) {
   assertCanManageFamily(actor);
   // Mesmo aqui, nenhum campo `role` é devolvido.
   const { rows } = await q.query(
-    `SELECT u.id, u.name, u.email, u.color, u.family_access AS "familyAccess", u.active,
+    `SELECT u.id, u.name, u.email, u.color, u.family_access AS "familyAccess", u.active, u.card_last4 AS "cardLast4",
             (u.password_hash IS NOT NULL) AS "hasPassword", (t.user_id IS NOT NULL) AS "telegramLinked",
             (SELECT max(last_seen_at) FROM sessions s WHERE s.user_id = u.id) AS "lastSeenAt"
        FROM users u LEFT JOIN telegram_links t ON t.user_id = u.id ORDER BY lower(u.name)`,
@@ -124,7 +135,7 @@ export async function createMember(db: Db, actor: AuthUser | null, input: { name
   });
 }
 
-export async function updateMemberAccess(db: Db, actor: AuthUser, memberId: number, body: { familyAccess?: string; active?: boolean }) {
+export async function updateMemberAccess(db: Db, actor: AuthUser, memberId: number, body: { familyAccess?: string; active?: boolean; cardLast4?: string | null }) {
   assertCanManageFamily(actor);
   const target = await db.query<{ id: number }>("SELECT id FROM users WHERE id = $1", [memberId]);
   if (!target.rows[0]) throw notFound();
@@ -132,6 +143,9 @@ export async function updateMemberAccess(db: Db, actor: AuthUser, memberId: numb
     if (body.familyAccess !== undefined) {
       if (!["none", "summary", "full"].includes(body.familyAccess)) throw badRequest("Permissão inválida.");
       await q.query("UPDATE users SET family_access = $2, updated_at = now() WHERE id = $1", [memberId, body.familyAccess]);
+    }
+    if (body.cardLast4 !== undefined) {
+      await q.query("UPDATE users SET card_last4 = $2, updated_at = now() WHERE id = $1", [memberId, parseCardLast4(body.cardLast4)]);
     }
     if (body.active !== undefined) {
       if (memberId === actor.id && body.active === false) throw badRequest("Você não pode desativar a própria conta.");

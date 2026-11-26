@@ -12,6 +12,8 @@ export interface Me {
   notifyWeekly: boolean;
   notifyGoals: boolean;
   notifyAnomaly: boolean;
+  /** Final (4 dígitos) do cartão de crédito; null = não cadastrado. */
+  cardLast4: string | null;
   telegramUsername: string | null;
   telegramLinkedAt: string | null;
   capabilities: { manageMembers: boolean };

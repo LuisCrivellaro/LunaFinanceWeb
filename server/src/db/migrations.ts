@@ -328,4 +328,16 @@ ALTER TABLE telegram_pending_actions ADD CONSTRAINT telegram_pending_actions_kin
 DROP TABLE IF EXISTS transfers;
 `,
   },
+  {
+    id: 4,
+    name: "card_last4",
+    // Final (4 dígitos) do cartão de crédito de cada pessoa, para identificar o
+    // cartão no painel. Só o final — o número completo nunca é guardado.
+    sql: /* sql */ `
+ALTER TABLE users ADD COLUMN card_last4 TEXT CHECK (card_last4 ~ '^[0-9]{4}$');
+`,
+    down: /* sql */ `
+ALTER TABLE users DROP COLUMN IF EXISTS card_last4;
+`,
+  },
 ];

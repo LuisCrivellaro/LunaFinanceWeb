@@ -124,7 +124,7 @@ export function useAccounts() {
 export function useInvalidateFinance() {
   const qc = useQueryClient();
   return () => {
-    for (const k of ["dashboard", "transactions", "bills", "accounts", "reports", "goals", "recurrences"]) qc.invalidateQueries({ queryKey: [k] });
+    for (const k of ["dashboard", "wallet", "transactions", "bills", "accounts", "reports", "goals", "recurrences"]) qc.invalidateQueries({ queryKey: [k] });
   };
 }
 
