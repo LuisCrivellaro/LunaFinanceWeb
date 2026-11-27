@@ -28,6 +28,7 @@
     "backup": "tsx server/src/scripts/backup.ts",
     "restore": "tsx server/src/scripts/restore.ts",
     "demo:seed": "tsx server/src/scripts/demo-seed.ts",
+    "demo:local": "node scripts/demo-local.mjs",
     "telegram:poll": "tsx server/src/scripts/telegram-poll.ts",
     "e2e": "node e2e/smoke.mjs",
     "fonts": "node web/scripts/fetch-fonts.mjs",
