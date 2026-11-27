@@ -52,7 +52,7 @@ Confirme cada item antes de editar. Se algo divergir, siga o código real e regi
 
 **Git:** a branch `main` está 1 commit à frente de `origin/main` (`e5ec991`), sem push. Existe a branch local `visual-next`: um protótipo Next.js antigo, com referências do Google Stitch em `design/stitch/` e o tema "Obsidian Kinetic Wealth" (azul/laranja). **Não faça merge dela nem copie a stack dela.** Pode consultá-la só como inspiração (`git show visual-next:caminho`), e a paleta deste prompt prevalece.
 
-**Ambiente local:** `npm run dev` sobe a API em `:3000` e o site em `http://localhost:5173`, com proxy de `/api`. O banco é PGlite em `.data/luna`. A demonstração vem de `npm run demo:seed`, com senha `DemoLuna2026` para todos: `lipe@demo.luna` (gestor) e `luciana@demo.luna`, `luis@demo.luna` e `joao@demo.luna` (membros). Se a ferramenta de preview injetar `PORT=5173`, a API sobe na porta errada. O `.claude/launch.json` já força `PORT=3000`.
+**Ambiente local:** `npm run dev` sobe a API em `:3000` e o site em `http://localhost:5173`, com proxy de `/api`. O banco é PGlite em `.data/luna`. A demonstração vem de `npm run demo:seed`, com `lipe@demo` / `teste123` (gestor) e senha `DemoLuna2026` para `luciana@demo.luna`, `luis@demo.luna` e `joao@demo.luna` (membros). Se a ferramenta de preview injetar `PORT=5173`, a API sobe na porta errada. O `.claude/launch.json` já força `PORT=3000`.
 
 ---
 
@@ -308,7 +308,7 @@ Não pare depois da auditoria nem depois do painel. O trabalho só termina com o
 ## 14. TESTES E QA (relate PASS / FAIL / SKIP com motivo)
 
 1. `npm run typecheck`, `npm run build` e `npm test` (testes do backend em PGlite: devem continuar passando, e eventuais falhas que já existiam devem ser identificadas como tal).
-2. `npm run demo:seed` (se `.data/` não existir) e `npm run dev`. No navegador disponível, faça login com `lipe@demo.luna` e com `luciana@demo.luna`, e percorra todas as rotas nos dois temas e nas larguras da seção 11.
+2. `npm run demo:seed` (se `.data/` não existir) e `npm run dev`. No navegador disponível, faça login com `lipe@demo` e com `luciana@demo.luna`, e percorra todas as rotas nos dois temas e nas larguras da seção 11.
 3. Teste de verdade:
    - Criar, editar e excluir lançamento, inclusive parcelado e transferência.
    - Pagar conta.

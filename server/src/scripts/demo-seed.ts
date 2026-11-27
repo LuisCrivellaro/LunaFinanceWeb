@@ -2,7 +2,8 @@
  * Popula um banco VAZIO com dados fictícios para demonstração/desenvolvimento.
  *   npm run demo:seed
  * Recusa rodar em produção ou se já houver pessoas cadastradas.
- * Senha de todos os perfis de demonstração: DemoLuna2026
+ * Senhas da demonstração: DemoLuna2026 (Luciana, Luís Carlos, João) e teste123 (Lipe, lipe@demo).
+ * A senha do Lipe é curta só para a demo local: o site exige 10+ caracteres ao trocar senha.
  */
 import { addMonths, currentMonth, makeDate, shiftMonth, today } from "../lib/clock.js";
 import { hashPassword } from "../lib/crypto.js";
@@ -18,17 +19,17 @@ await withContext(async (ctx) => {
 
   const hash = await hashPassword("DemoLuna2026");
   const people = [
-    { key: "luciana", name: "Luciana", email: "luciana@demo.luna", role: "member" },
-    { key: "luis", name: "Luís Carlos", email: "luis@demo.luna", role: "member" },
-    { key: "lipe", name: "Lipe", email: "lipe@demo.luna", role: "admin" },
-    { key: "joao", name: "João", email: "joao@demo.luna", role: "member" },
+    { key: "luciana", name: "Luciana", email: "luciana@demo.luna", role: "member", password: "DemoLuna2026" },
+    { key: "luis", name: "Luís Carlos", email: "luis@demo.luna", role: "member", password: "DemoLuna2026" },
+    { key: "lipe", name: "Lipe", email: "lipe@demo", role: "admin", password: "teste123" },
+    { key: "joao", name: "João", email: "joao@demo.luna", role: "member", password: "DemoLuna2026" },
   ];
   const ids: Record<string, number> = {};
   const acc: Record<string, number> = {};
   for (const [i, p] of people.entries()) {
     const u = await db.query<{ id: number }>(
       "INSERT INTO users (name, email, password_hash, role, color) VALUES ($1,$2,$3,$4,$5) RETURNING id",
-      [p.name, p.email, hash, p.role, MEMBER_PALETTE[i]],
+      [p.name, p.email, p.password === "DemoLuna2026" ? hash : await hashPassword(p.password), p.role, MEMBER_PALETTE[i]],
     );
     ids[p.key] = u.rows[0].id;
     const a = await db.query<{ id: number }>(
@@ -120,8 +121,8 @@ await withContext(async (ctx) => {
   await contrib(g2.rows[0].id, "lipe", 100000, 0);
   await contrib(g3.rows[0].id, "lipe", 410000, 2);
 
-  console.log("Demonstração criada. Logins (senha DemoLuna2026):");
-  for (const p of people) console.log(`  ${p.name.padEnd(12)} ${p.email}`);
+  console.log("Demonstração criada. Logins:");
+  for (const p of people) console.log(`  ${p.name.padEnd(12)} ${p.email.padEnd(20)} senha ${p.password}`);
 });
 
 function mulberry32(seed: number) {

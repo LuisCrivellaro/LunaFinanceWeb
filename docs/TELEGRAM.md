@@ -234,7 +234,7 @@ Cada integrante, **logado na própria conta** do site: **Configurações → Tel
 ```bash
 cp .env.example .env              # coloque o token de um BOT DE TESTE (não o de produção)
 npm install
-npm run demo:seed                 # família fictícia (senha DemoLuna2026)
+npm run demo:seed                 # família fictícia (lipe@demo / teste123; demais: DemoLuna2026)
 npm run dev                       # site em http://localhost:5173
 npm run telegram:delete-webhook   # só se esse bot tiver webhook
 npm run telegram:poll             # outro terminal: bot recebendo mensagens

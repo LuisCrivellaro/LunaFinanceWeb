@@ -9,6 +9,9 @@ const { chromium } = createRequire(import.meta.url)("playwright");
 
 const BASE = process.env.BASE_URL ?? "http://localhost:3000";
 const PASS = "DemoLuna2026";
+// o Lipe tem login próprio na demonstração (server/src/scripts/demo-seed.ts)
+const LIPE = "lipe@demo";
+const passwordFor = (email) => (email === LIPE ? "teste123" : PASS);
 const forbidden = /\b(adm|admin|administrador|propriet[aá]rio|fundador|dono)\b/i;
 let failures = 0;
 const check = (ok, msg) => {
@@ -25,14 +28,14 @@ async function login(email, viewport = { width: 1280, height: 860 }) {
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(`${BASE}/entrar`);
   await page.fill("input[type=email]", email);
-  await page.fill("input[type=password]", PASS);
+  await page.fill("input[type=password]", passwordFor(email));
   await page.click("button.btn-primary");
   await page.waitForSelector(".hero .balance");
   return { ctx, page, errors };
 }
 
 // 1) Nenhuma tela mostra hierarquia — para ninguém, inclusive o Lipe
-for (const email of ["lipe@demo.luna", "luciana@demo.luna"]) {
+for (const email of [LIPE, "luciana@demo.luna"]) {
   const { ctx, page } = await login(email);
   let found = [];
   for (const path of ["/", "/movimentacoes", "/contas", "/metas", "/relatorios", "/configuracoes"]) {

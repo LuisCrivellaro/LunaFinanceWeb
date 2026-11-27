@@ -28,7 +28,7 @@ Valores monetários são guardados em **centavos inteiros** (sem float). Datas d
 ```bash
 npm install
 cp .env.example .env          # pode deixar DATABASE_URL vazio: usa PGlite em .data/
-npm run demo:seed             # opcional: família fictícia (senha DemoLuna2026)
+npm run demo:seed             # opcional: família fictícia (lipe@demo / teste123; demais: DemoLuna2026)
 npm run dev                   # API em :3000 e site em http://localhost:5173 (baixa a fonte Satoshi na 1ª vez)
 ```
 
