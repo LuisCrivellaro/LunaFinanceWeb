@@ -588,10 +588,10 @@ a.result-pill:hover {
 .auth-moon {
   position: absolute;
   z-index: -1;
-  width: min(620px, 92%);
-  right: -12%;
+  width: min(560px, 88%);
+  left: 50%;
   top: 50%;
-  transform: translateY(-55%);
+  transform: translate(-50%, -52%);
 }
 .auth-copy {
   display: grid;

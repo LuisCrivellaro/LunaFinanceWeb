@@ -36,6 +36,12 @@
   border-radius: var(--r-sm);
   min-width: 0;
 }
+.brand-logo {
+  flex: none;
+  display: block;
+  object-fit: contain;
+  user-select: none;
+}
 .brand-name {
   font-size: 17px;
   font-weight: 700;

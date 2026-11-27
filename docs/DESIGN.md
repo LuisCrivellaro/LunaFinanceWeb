@@ -4,7 +4,7 @@ Redesign "noite clara" (branch `redesign/dark-premium`). Este documento registra
 
 ## Conceito
 
-Um painel noturno e calmo para as finanças da família. O **roxo/lavanda** é a identidade e marca foco e seleção. **Verde e vermelho** só carregam significado: receita/despesa e estados (em dia, atrasado). A lua continua presente de forma abstrata: na marca (crescente recortado), no arco do card de saldo, na tela de acesso e nas **fases da lua** das metas.
+Um painel noturno e calmo para as finanças da família. O **roxo/lavanda** é a identidade e marca foco e seleção. **Verde e vermelho** só carregam significado: receita/despesa e estados (em dia, atrasado). A **logo** é o husky no círculo roxo (`web/public/brand/`: `logo-160.webp` para a marca na interface, `logo-512.webp` na tela de acesso, favicons e `apple-touch-icon.png`), sempre via `LunaMark` em `components/Layout.tsx`. A lua continua presente de forma abstrata: no arco do card de saldo, nos anéis da tela de acesso e nas **fases da lua** das metas.
 
 O **dark é a experiência principal** e o tema padrão. O claro tem tokens próprios (não é uma inversão), e a opção "Automático" segue o sistema operacional.
 

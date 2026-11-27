@@ -13,21 +13,9 @@ import { Avatar } from "./ui";
 import { TransactionForm } from "./TransactionForm";
 
 /** Marca: crescente lunar recortado num quadrado lavanda. */
+/** Logo do Luna Finance (arquivos em web/public/brand). Decorativa: o texto ao lado já nomeia. */
 export function LunaMark({ size = 30 }: { size?: number }) {
-  const id = useId().replace(/:/g, "");
-  return (
-    <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden>
-      <defs>
-        <linearGradient id={`lm${id}`} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#dcb8ff" />
-          <stop offset="1" stopColor="#9a66e0" />
-        </linearGradient>
-      </defs>
-      <rect width="64" height="64" rx="18" fill={`url(#lm${id})`} />
-      <path d="M38 15a18 18 0 1 0 12 31A15 15 0 0 1 38 15z" fill="#140a22" />
-      <circle cx="46.5" cy="19.5" r="2.2" fill="#140a22" />
-    </svg>
-  );
+  return <img className="brand-logo" src="/brand/logo-160.webp" width={size} height={size} alt="" aria-hidden draggable={false} />;
 }
 
 const NAV = [

@@ -21,15 +21,11 @@ function AuthFrame({ children }: { children: React.ReactNode }) {
               <stop offset="0%" stopColor="#c48aff" stopOpacity="0.28" />
               <stop offset="100%" stopColor="#c48aff" stopOpacity="0" />
             </radialGradient>
-            <linearGradient id="authCrescent" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stopColor="#e6ccff" />
-              <stop offset="100%" stopColor="#8f5ad6" />
-            </linearGradient>
           </defs>
           <circle cx="300" cy="300" r="290" fill="url(#authGlow)" />
           <circle cx="300" cy="300" r="250" fill="none" stroke="#c48aff" strokeOpacity="0.1" />
           <circle cx="300" cy="300" r="190" fill="none" stroke="#c48aff" strokeOpacity="0.14" />
-          <path d="M318 150a150 150 0 1 0 0 300a178 178 0 0 1 0-300z" fill="url(#authCrescent)" fillOpacity="0.92" />
+          <image href="/brand/logo-512.webp" x="125" y="125" width="350" height="350" />
         </svg>
         <div className="auth-copy">
           <p className="eyebrow">Finanças da família</p>
