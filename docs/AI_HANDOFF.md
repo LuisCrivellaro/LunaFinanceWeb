@@ -48,13 +48,18 @@ Branch: `feat/openbot-whatsapp` (criada de `feat/cartoes-da-familia`, PR #1, por
   `GET /health` com ela = 200), vincular número pelo painel, testar integração, criar orçamento, salvar cartão;
   login de não-gestor sem OpenBot/cartões; 375 px sem rolagem horizontal; zero erros de JS.
 
+- Sessão de 27/11/2026: login demo do Lipe virou `lipe@demo` / `teste123` (demais: `DemoLuna2026`);
+  `npm run demo:local` (scripts/demo-local.mjs) recria o banco de demo e sobe API + site num comando, conferindo
+  as portas 3000/5173; **nova logo** (husky no círculo roxo) em `web/public/brand/`, usada pelo `LunaMark`
+  (menu, topo no celular, login) e nos favicons; `luna.svg` removido. e2e 23/23.
+
 ## Pendente (próximas etapas, nesta ordem)
 1. Abrir PR de `feat/openbot-whatsapp` (base: `feat/cartoes-da-familia`, ou `main` depois do PR #1). **Sem merge na main.**
 2. Teste ponta a ponta real com o OpenBot + WhatsApp (seguir `integrations/openbot/TEST_CASES.md`) — exige a
    instalação do OpenBot e um número; não é possível no container.
 3. (Opcional) MCP: a doc do OpenBot não descreve config de MCP externo; integração oficial segue HTTP+OpenAPI.
-4. Pedido em aberto: o usuário mencionou "atualizar a LOGO" no título da tarefa, sem detalhes (qual arquivo/arte).
-   Não foi feito — confirmar com ele antes.
+4. (Opcional) Versão simplificada da logo para tamanhos ≤ 32 px (favicon); logo no cabeçalho do PDF de relatórios;
+   foto do bot do Telegram (trocada pelo @BotFather, não pelo código).
 
 ## Problemas conhecidos
 - Vitest em paralelo no Windows às vezes derruba workers (0xC0000409, PGlite). Em série passa.
@@ -62,6 +67,6 @@ Branch: `feat/openbot-whatsapp` (criada de `feat/cartoes-da-familia`, PR #1, por
 
 ## Próxima ação exata
 Abrir o PR de `feat/openbot-whatsapp` (item 1) e, com o OpenBot instalado, rodar os cenários de
-`integrations/openbot/TEST_CASES.md`. Para rodar o e2e local: `cp .env.example .env` (APP_URL=http://localhost:3000),
-`npm run db:migrate && npm run demo:seed && npm run build && npm start`, depois `npm run e2e`.
-Atenção: não rode `demo:seed` com o servidor ligado (PGlite em `.data/` não aceita dois processos).
+`integrations/openbot/TEST_CASES.md`. Para ver o app no computador do usuário (Windows/cmd): feche terminais antigos
+do Luna, `git pull origin feat/openbot-whatsapp`, `npm install`, `npm run demo:local` → http://localhost:5173
+(`lipe@demo` / `teste123`). "Algo deu errado" no login = API (porta 3000) fora do ar, não senha errada.
